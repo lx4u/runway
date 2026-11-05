@@ -1,0 +1,28 @@
+Source: runway
+Section: admin
+Priority: optional
+Maintainer: Cedric Hombourger <chombourger@gmail.com>
+Build-Depends: debhelper-compat (= 13), meson (>= 1.0), ninja-build, pkgconf, libssl-dev, libfuse3-dev, gnu-efi, qemu-user-static <cross>
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: runway-tools
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Runway boot store control and audit tools
+ Includes rwyctl for managing slots and states in Runway boot stores,
+ fsck.runway for integrity auditing, and the RUNWAY.EFI boot loader.
+
+Package: runway-fuse
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, fuse3, runway-tools (>= ${source:Version})
+Description: FUSE filesystem driver for Runway boot stores
+ Provides the rwy-fuse daemon and the boot.mount systemd unit to mount
+ a Runway boot store as a BLS-compliant /boot filesystem.
+
+Package: runway-bls
+Architecture: all
+Depends: ${misc:Depends}, runway-fuse (>= ${source:Version}), systemd-boot | systemd (<< 252)
+Description: Boot Loader Specification integration for Runway
+ Configures kernel-install, systemd-bless-boot, and interactive shells
+ to work with Runway synthetic BLS boot stores.

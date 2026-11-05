@@ -1,0 +1,160 @@
+From 136f84cc9e8c8e73609059c8dbc0bbe31123dfb2 Mon Sep 17 00:00:00 2001
+From: Cedric Hombourger <cedric.hombourger@siemens.com>
+Date: Sat, 31 Oct 2026 16:11:10 +0100
+Subject: [RFC PATCH v3 3/4] fs: exfat: add a write that keeps the end of the
+ file
+
+exfat_fs_write() cuts the file at the end of the written range, the
+same as FAT did before fs_pwrite() existed.
+
+Add exfat_fs_pwrite(), which skips the truncate. exfat_generic_pwrite()
+still grows the file when the write goes past its end, so a zero-length
+write at offset 0 does not change the file.
+
+Extend the fs_pwrite() dm test to an exFAT image.
+
+Signed-off-by: Cedric Hombourger <cedric.hombourger@siemens.com>
+---
+ fs/exfat/io.c            | 24 +++++++++++++++++++-----
+ fs/fs.c                  |  1 +
+ include/exfat.h          |  2 ++
+ test/dm/host.c           | 19 +++++++++++++++----
+ test/py/tests/test_ut.py |  1 +
+ 5 files changed, 38 insertions(+), 9 deletions(-)
+
+diff --git a/fs/exfat/io.c b/fs/exfat/io.c
+index 6c86688c..26adecb7 100644
+--- a/fs/exfat/io.c
++++ b/fs/exfat/io.c
+@@ -968,8 +968,8 @@ int exfat_fs_mkdir(const char *dirname)
+ 	return exfat_mkdir(&ctxt.ef, dirname);
+ }
+ 
+-int exfat_fs_write(const char *filename, void *buf, loff_t offset,
+-		   loff_t len, loff_t *actwrite)
++static int exfat_write_at(const char *filename, void *buf, loff_t offset,
++			  loff_t len, loff_t *actwrite, bool keep_tail)
+ {
+ 	struct exfat_node* node;
+ 	ssize_t sz;
+@@ -1004,9 +1004,11 @@ int exfat_fs_write(const char *filename, void *buf, loff_t offset,
+ 		goto exit;
+ 	}
+ 
+-	err = exfat_truncate(&ctxt.ef, node, offset + sz, false);
+-	if (err)
+-		goto exit;
++	if (!keep_tail) {
++		err = exfat_truncate(&ctxt.ef, node, offset + sz, false);
++		if (err)
++			goto exit;
++	}
+ 
+ 	*actwrite = sz;
+ 
+@@ -1016,6 +1018,18 @@ exit:
+ 	return err;
+ }
+ 
++int exfat_fs_write(const char *filename, void *buf, loff_t offset,
++		   loff_t len, loff_t *actwrite)
++{
++	return exfat_write_at(filename, buf, offset, len, actwrite, false);
++}
++
++int exfat_fs_pwrite(const char *filename, void *buf, loff_t offset,
++		    loff_t len, loff_t *actwrite)
++{
++	return exfat_write_at(filename, buf, offset, len, actwrite, true);
++}
++
+ int exfat_fs_rename(const char *old_path, const char *new_path)
+ {
+ 	return exfat_rename(&ctxt.ef, old_path, new_path);
+diff --git a/fs/fs.c b/fs/fs.c
+index 59f1f3df..0c81be3a 100644
+--- a/fs/fs.c
++++ b/fs/fs.c
+@@ -400,6 +400,7 @@ static struct fstype_info fstypes[] = {
+ 		.exists = exfat_fs_exists,
+ 		.uuid = fs_uuid_unsupported,
+ 		.write = exfat_fs_write,
++		.pwrite = exfat_fs_pwrite,
+ 		.ln = fs_ln_unsupported,
+ 		.unlink = exfat_fs_unlink,
+ 		.mkdir = exfat_fs_mkdir,
+diff --git a/include/exfat.h b/include/exfat.h
+index 75fce5b6..04394fc5 100644
+--- a/include/exfat.h
++++ b/include/exfat.h
+@@ -20,6 +20,8 @@ int exfat_fs_unlink(const char *filename);
+ int exfat_fs_mkdir(const char *dirname);
+ int exfat_fs_write(const char *filename, void *buf, loff_t offset,
+ 		   loff_t len, loff_t *actwrite);
++int exfat_fs_pwrite(const char *filename, void *buf, loff_t offset,
++		    loff_t len, loff_t *actwrite);
+ int exfat_fs_rename(const char *old_path, const char *new_path);
+ 
+ #endif /* _EXFAT_H */
+diff --git a/test/dm/host.c b/test/dm/host.c
+index 69afe5f5..b472bc10 100644
+--- a/test/dm/host.c
++++ b/test/dm/host.c
+@@ -109,10 +109,10 @@ static int dm_test_host_dup(struct unit_test_state *uts)
+ }
+ DM_TEST(dm_test_host_dup, UTF_SCAN_FDT);
+ 
+-/* fs_pwrite() keeps the data after the written range on FAT */
+-static int dm_test_host_fat_pwrite(struct unit_test_state *uts)
++/* fs_pwrite() keeps the data after the written range */
++static int host_fs_pwrite_check(struct unit_test_state *uts,
++				const char *label, const char *image)
+ {
+-	static const char label[] = "fatpw";
+ 	struct udevice *dev, *blk;
+ 	struct blk_desc *desc;
+ 	char fname[256];
+@@ -120,7 +120,7 @@ static int dm_test_host_fat_pwrite(struct unit_test_state *uts)
+ 	loff_t actwrite, actread;
+ 
+ 	ut_assertok(host_create_device(label, true, DEFAULT_BLKSZ, &dev));
+-	ut_assertok(os_persistent_file(fname, sizeof(fname), "1MB.fat32.img"));
++	ut_assertok(os_persistent_file(fname, sizeof(fname), image));
+ 	ut_assertok(host_attach_file(dev, fname));
+ 	ut_assertok(blk_get_from_parent(dev, &blk));
+ 	ut_assertok(device_probe(blk));
+@@ -150,8 +150,19 @@ static int dm_test_host_fat_pwrite(struct unit_test_state *uts)
+ 
+ 	return 0;
+ }
++
++static int dm_test_host_fat_pwrite(struct unit_test_state *uts)
++{
++	return host_fs_pwrite_check(uts, "fatpw", "1MB.fat32.img");
++}
+ DM_TEST(dm_test_host_fat_pwrite, UTF_SCAN_FDT);
+ 
++static int dm_test_host_exfat_pwrite(struct unit_test_state *uts)
++{
++	return host_fs_pwrite_check(uts, "exfatpw", "8MB.exfat.img");
++}
++DM_TEST(dm_test_host_exfat_pwrite, UTF_SCAN_FDT);
++
+ /* Basic test of 'host' command */
+ static int dm_test_cmd_host(struct unit_test_state *uts)
+ {
+diff --git a/test/py/tests/test_ut.py b/test/py/tests/test_ut.py
+index a33f188d..8ced16c1 100644
+--- a/test/py/tests/test_ut.py
++++ b/test/py/tests/test_ut.py
+@@ -545,6 +545,7 @@ def test_ut_dm_init(ubman):
+ 
+     FsHelper(ubman.config, 'ext2', 2, '2MB').mk_fs()
+     FsHelper(ubman.config, 'fat32', 1, '1MB').mk_fs()
++    FsHelper(ubman.config, 'exfat', 8, '8MB').mk_fs()
+ 
+     mmc_dev = 6
+     fn = os.path.join(ubman.config.source_dir, f'mmc{mmc_dev}.img')
+-- 
+2.47.3
+

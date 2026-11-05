@@ -1,0 +1,250 @@
+/* rwyctl: reading EFI/RUNWAY: slot names and scalars, and the commands `stores`, `status`, `get` and `slots`. */
+/* SPDX-License-Identifier: Apache-2.0 */
+#define _GNU_SOURCE
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "rwyctl.h"
+#include "rwy_meta.h"
+#include "anchor_linux.h"
+
+int read_scalar(const char *path, char *out, size_t max) {
+    size_t n = max - 1;
+    int rc = rwy_read_path(&g_store, path, 0, out, &n);
+    if (rc) return rc;
+    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) n--;
+    out[n] = 0;
+    return 0;
+}
+
+int slot_name_ok(const char *n) {
+    int i;
+    if (strncmp(n, "CONFIG", 6) || !n[6]) return 0;
+    for (i = 6; n[i]; i++) if (!isdigit((unsigned char)n[i])) return 0;
+    return 1;
+}
+
+static int cmp_slot(const void *a, const void *b) {
+    const char *x = a, *y = b;
+    size_t lx = strlen(x), ly = strlen(y);
+    return lx != ly ? (lx < ly ? -1 : 1) : strcmp(x, y);
+}
+
+int have_efi_runway(void) {
+    rwy_attr_t a;
+    return rwy_stat(&g_store, EFI_ROOT, &a) == RWY_OK && RWY_S_ISDIR(a.mode);
+}
+
+char g_names[MAXSLOTS][32];
+int list_slots(void) {
+    static char buf[MAXSLOTS * 64];
+    size_t count = MAXSLOTS, off = 0, i;
+    int n = 0;
+    uint8_t types[MAXSLOTS];
+    if (rwy_readdir(&g_store, EFI_ROOT, buf, sizeof(buf), &count, types)) return 0;
+    for (i = 0; i < count && n < MAXSLOTS; i++) {
+        const char *nm = buf + off;
+        off += strlen(nm) + 1;
+        if (slot_name_ok(nm) && strlen(nm) < 32) snprintf(g_names[n++], 32, "%s", nm);
+    }
+    qsort(g_names, (size_t)n, 32, cmp_slot);
+    return n;
+}
+
+int cmd_stores(void) {
+    int g, i;
+    char u[37];
+    printf("%-36s %7s %10s %9s %s\n", "UUID", "MEMBERS", "GENERATION", "ENCRYPTED", "BOOT");
+    for (g = 0; g < g_ngrp; g++) {
+        uint64_t best = 0;
+        for (i = 0; i < g_grp[g].n; i++) if (g_mem[g_grp[g].m[i]].gen > best) best = g_mem[g_grp[g].m[i]].gen;
+        rwy_format_uuid(g_grp[g].uuid, u);
+        printf("%-36s %7d %10llu %9s %s\n", u, g_grp[g].n, (unsigned long long)best,
+               g_mem[g_grp[g].m[0]].enc ? "yes" : "no", g_grp[g].boot ? "boot" : "-");
+        for (i = 0; i < g_grp[g].n; i++)
+            printf("  %s %llu\n", g_mem[g_grp[g].m[i]].path, (unsigned long long)g_mem[g_grp[g].m[i]].gen);
+    }
+    return 0;
+}
+
+/* The member paths of a store, one per line, for a mount helper. A RUNWAY.DAT that was only mounted for the look is
+ * gone at exit, so it is refused. */
+int cmd_members(const group_t *g) {
+    int i, k;
+    for (i = 0; i < g->n; i++) {
+        for (k = 0; k < g_ntmp; k++) {
+            if (!strncmp(g_mem[g->m[i]].path, g_tmpmnt[k], strlen(g_tmpmnt[k]))) {
+                warn("%s is not mounted, mount its file system first", g_mem[g->m[i]].path);
+                return X_NOSTORE;
+            }
+        }
+    }
+    for (i = 0; i < g->n; i++) puts(g_mem[g->m[i]].path);
+    return 0;
+}
+
+const char *slot_path(const char *name, char *out) {
+    if (!strcmp(name, "BOOTED")) { snprintf(out, PATH_MAX, EFI_ROOT "/BOOTED"); return out; }
+    if (!strcmp(name, "RECOVERY") || slot_name_ok(name)) { snprintf(out, PATH_MAX, EFI_ROOT "/%s", name); return out; }
+    return 0;
+}
+
+static void print_slot_line(const char *slot, const char *rev, const char *st, const char *tries, const char *wd,
+                            const char *cause, const char *label, const char *entry, const char *meta, const char *pin) {
+    printf("%-26s %-20s %-10s %-6s %-10s %-15s %-15s %-25s %-10s %s\n", slot, rev, st, tries, wd, cause, label, entry, meta, pin);
+}
+
+/* Read EFI/RUNWAY/<slot>/<file>, "-" when it cannot be read. Returns 1 then. */
+static int slot_scalar(const char *slot, const char *file, char *out, size_t size) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof(p), EFI_ROOT "/%s/%s", slot, file);
+    if (!read_scalar(p, out, size) && out[0]) return 0;
+    strcpy(out, "-");
+    return 1;
+}
+
+/* Extract version or presence from META for status display. */
+static void slot_meta_summary(const char *slot, char *out, size_t size) {
+    char p[PATH_MAX], buf[RWY_META_MAX + 1];
+    const char *val;
+    size_t n = sizeof(buf) - 1, vlen;
+    snprintf(p, sizeof(p), EFI_ROOT "/%s/META", slot);
+    if (rwy_read_path(&g_store, p, 0, buf, &n) || n == 0) {
+        snprintf(out, size, "-");
+        return;
+    }
+    buf[n] = 0;
+    if (rwy_meta_find(buf, n, "version", &val, &vlen)) {
+        if (vlen >= size) vlen = size - 1;
+        memcpy(out, val, vlen);
+        out[vlen] = 0;
+    } else {
+        snprintf(out, size, "yes");
+    }
+}
+
+/* One line per slot; returns how many have no REVISION (incomplete). */
+static int print_slots(void) {
+    char tries[128], wd[128], rev[128], st[128], cause[128], label[256], entry[256], meta[128], pin[16];
+    int i, n = list_slots(), inc = 0;
+    print_slot_line("SLOT", "REVISION", "STATE", "TRIES", "WATCHDOG", "CAUSE", "LABEL", "ENTRY", "META", "PIN");
+    for (i = 0; i < n; i++) {
+        inc += slot_scalar(g_names[i], "REVISION", rev, sizeof(rev));
+        slot_scalar(g_names[i], "STATE", st, sizeof(st));
+        slot_scalar(g_names[i], "TRIES", tries, sizeof(tries));
+        slot_scalar(g_names[i], "WATCHDOG", wd, sizeof(wd));
+        slot_scalar(g_names[i], "CAUSE", cause, sizeof(cause));
+        slot_scalar(g_names[i], "LABEL", label, sizeof(label));
+        slot_scalar(g_names[i], "ENTRY", entry, sizeof(entry));
+        slot_meta_summary(g_names[i], meta, sizeof(meta));
+        slot_scalar(g_names[i], "PIN", pin, sizeof(pin));
+        print_slot_line(g_names[i], rev, st, tries, wd, cause, label, entry, meta, !strcmp(pin, "1") ? "yes" : "-");
+    }
+    return inc;
+}
+
+static void print_global(const char *label, const char *file) {
+    char v[128];
+    printf("%s=%s\n", label, read_scalar(file, v, sizeof(v)) ? "-" : v);
+}
+
+/* USED=<percent of the usable pool> (<used>/<usable> blocks) */
+static void print_used(void) {
+    uint32_t used, usable;
+    rwy_pool_usage(&g_store, &used, &usable);
+    printf("USED=%u%% (%u/%u blocks)\n", usable ? (unsigned)((uint64_t)used * 100 / usable) : 0, used, usable);
+}
+
+int cmd_status(void) {
+    char v[128];
+    rwy_attr_t a;
+    int inc;
+    if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return 0; }
+    inc = print_slots();
+    if (rwy_readlink(&g_store, EFI_ROOT "/BOOTED", v, sizeof(v)) == RWY_OK) {
+        char *b = strrchr(v, '/');
+        printf("BOOTED=%s\n", b ? b + 1 : v);
+    } else printf("BOOTED=-\n");
+    print_global("REASON", EFI_ROOT "/REASON");
+    print_global("WATCHDOG", EFI_ROOT "/WATCHDOG");
+    print_global("SLOTS", EFI_ROOT "/SLOTS");
+    print_global("BOOT-DELAY", EFI_ROOT "/BOOT-DELAY");
+    print_global("QUOTA", EFI_ROOT "/QUOTA");
+    print_global("LOOP-GUARD", EFI_ROOT "/LOOP-GUARD");
+    print_global("LOOP-LIMIT", EFI_ROOT "/LOOP-LIMIT");
+    print_global("LOOP-WINDOW", EFI_ROOT "/LOOP-WINDOW");
+    print_used();
+    print_last_evict();
+    printf("RECOVER_NEXT=%s\n", rwy_stat(&g_store, EFI_ROOT "/RECOVER_NEXT", &a) == RWY_OK ? "yes" : "no");
+    print_global("COUNTER", EFI_ROOT "/REVISION");
+    printf("RECOVERY=%s\n", rwy_stat(&g_store, EFI_ROOT "/RECOVERY", &a) ? "absent" :
+           rwy_stat(&g_store, EFI_ROOT "/RECOVERY/KERNEL", &a) ? "invalid" : "valid");
+    printf("RECORD=%s\n", rwy_record_damaged(&g_store) ? "damaged" : "ok");
+    printf("ANCHOR=%s\n", anchor_state(&g_store));
+    printf("INCOMPLETE=%d\n", inc);
+    print_mirror_health();
+    return 0;
+}
+
+int in_list(const char *s, const char *const *list) {
+    for (; *list; list++)
+        if (!strcmp(s, *list)) return 1;
+    return 0;
+}
+
+static const char *const global_get_fields[] = { "REVISION", "WATCHDOG", "REASON", "SLOTS", "BOOT-DELAY", "QUOTA", "LOOP-GUARD", "LOOP-LIMIT", "LOOP-WINDOW", NULL };
+static const char *const slot_get_fields[] = { "STATE", "TRIES", "REVISION", "INDEX", "WATCHDOG", "ARGS", "CAUSE", "PIN", "LABEL", "ENTRY", "META", NULL };
+
+/* Print BOOTED, the name of the slot the link points to. */
+static int get_booted(void) {
+    char v[4200], *b;
+    if (rwy_readlink(&g_store, EFI_ROOT "/BOOTED", v, sizeof(v))) { warn("%s", "BOOTED is not set"); return X_IO; }
+    b = strrchr(v, '/');
+    puts(b ? b + 1 : v);
+    return 0;
+}
+
+int cmd_get(int argc, char **argv) {
+    char p[PATH_MAX], v[4200], sp[PATH_MAX];
+    const char *name = 0, *field;
+    int rc;
+    if (argc == 1) field = argv[0];
+    else if (argc == 2) { name = argv[0]; field = argv[1]; }
+    else { warn("%s", "usage: get [NAME] FIELD"); return X_USAGE; }
+    if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return X_IO; }
+    if (!name && !strcmp(field, "BOOTED")) return get_booted();
+    if (!name) {   /* global scalars */
+        if (!in_list(field, global_get_fields)) { warn("unknown field %s", field); return X_USAGE; }
+        snprintf(p, sizeof(p), EFI_ROOT "/%s", field);
+    } else {
+        if (!slot_path(name, sp)) { warn("bad slot name %s", name); return X_USAGE; }
+        if (!in_list(field, slot_get_fields)) { warn("unknown field %s", field); return X_USAGE; }
+        snprintf(p, sizeof(p), "%s/%s", sp, field);
+    }
+    rc = read_scalar(p, v, sizeof(v));
+    if (rc == RWY_ERR_NOENT) { warn("%s is not set", p); return X_IO; }
+    if (rc) { warn("cannot read %s", p); return X_IO; }
+    puts(v);
+    return 0;
+}
+
+/* Print the slot names, or only the slots whose LABEL is exactly the given text. */
+int cmd_slots(int argc, char **argv) {
+    const char *label = 0;
+    char v[4200];
+    int i, n;
+    if (argc == 2 && !strcmp(argv[0], "--label")) label = argv[1];
+    else if (argc) { warn("%s", "usage: slots [--label LABEL]"); return X_USAGE; }
+    if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return X_IO; }
+    n = list_slots();
+    for (i = 0; i < n; i++) {
+        char p[PATH_MAX];
+        if (label) {
+            snprintf(p, sizeof(p), EFI_ROOT "/%s/LABEL", g_names[i]);
+            if (read_scalar(p, v, sizeof(v)) || strcmp(v, label)) continue;
+        }
+        puts(g_names[i]);
+    }
+    return 0;
+}

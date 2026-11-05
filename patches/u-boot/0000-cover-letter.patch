@@ -1,0 +1,59 @@
+From c3e384f60b23a1179109e2a3cc845bdfc3043f93 Mon Sep 17 00:00:00 2001
+From: Cedric Hombourger <cedric.hombourger@siemens.com>
+Date: Sat, 31 Oct 2026 16:16:37 +0100
+Subject: [RFC PATCH v3 0/4] fs: keep the end of a file in EFI Write()
+
+EFI_FILE_PROTOCOL.Write() cuts a FAT file at the end of the written
+range, so a write in the middle of a file loses the data after it.
+This series keeps that data. It is still an RFC, mainly for the new
+interface.
+
+fs_write() does not change. The fatwrite command depends on it
+replacing a whole file. The new fs_pwrite() keeps the tail. FAT and
+exFAT implement it. Other filesystems, such as ext4, return -ENOSYS,
+and EFI Write() then falls back to fs_write().
+
+Changes since v2:
+
+- Rename fs_overwrite() to fs_pwrite() and file_fat_overwrite() to
+  file_fat_pwrite(), following pwrite(2).
+- fs_pwrite() returns -ENOSYS when the filesystem cannot keep the
+  tail, instead of falling back to fs_write(). EFI Write() now falls
+  back explicitly.
+- A zero-length write with keep_tail no longer frees the clusters.
+- Rename fs_write_with() to _fs_write(), with keep_tail as the last
+  argument.
+- Document the tail behaviour of fs_write() and the return values of
+  fs_pwrite().
+- Add exFAT support, as a separate patch.
+- Add dm tests that write into the middle of a FAT and an exFAT file.
+- Add an efi_selftest that overwrites the start of u-boot.txt.
+- Fix the EFI commit message: the file is cut at the end of the last
+  write (offset + len), and the fix only covers FAT and exFAT.
+
+Possibly future (I would do my best if this series is accepted):
+
+- pwrite for ext4
+- truncation in EFI SetInfo()
+
+Cedric Hombourger (4):
+  fs: fat: add a write that keeps the end of the file
+  fs: add fs_pwrite() to write without trimming the file
+  fs: exfat: add a write that keeps the end of the file
+  efi_loader: do not trim files in Write()
+
+ fs/exfat/io.c                                | 24 +++++++--
+ fs/fat/fat_write.c                           | 35 +++++++++----
+ fs/fs.c                                      | 29 +++++++++--
+ include/exfat.h                              |  2 +
+ include/fat.h                                |  2 +
+ include/fs.h                                 | 22 +++++++-
+ lib/efi_loader/efi_file.c                    | 10 +++-
+ lib/efi_selftest/efi_selftest_block_device.c | 48 +++++++++++++++++
+ test/dm/host.c                               | 55 ++++++++++++++++++++
+ test/py/tests/test_ut.py                     |  1 +
+ 10 files changed, 208 insertions(+), 20 deletions(-)
+
+-- 
+2.47.3
+

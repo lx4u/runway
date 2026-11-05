@@ -1,0 +1,169 @@
+.TH FSCK.RUNWAY 8 "" "Runway" "System Administration"
+.SH NAME
+fsck.runway \- check, repair and compact a Runway boot store
+.SH SYNOPSIS
+.B fsck.runway
+[\fB\-a\fR | \fB\-p\fR | \fB\-y\fR | \fB\-n\fR | \fB\-\-repair\fR | \fB\-\-defrag\fR]
+[\fB\-f\fR]
+[\fB\-k\fR \fIpassphrase\fR]
+[\fB\-\-tpm\fR \fIdevice\fR]
+[\fB\-\-member\fR \fIstore\fR]...
+.I store
+.SH DESCRIPTION
+.B fsck.runway
+checks the structures of a Runway store: both superblocks, the generation in use,
+block headers, inodes, extents, the block bitmap, the directory tree, the boot
+configuration under
+.IR EFI/RUNWAY ,
+and the recovery area.
+It is the file system checker used by
+.BR fsck (8)
+for file system type
+.BR runway .
+.PP
+By default it only reads the store.
+The repair is conservative.
+It fixes leftover blocks that are marked but no longer reachable,
+and the boot counter or the state record of the boot configuration.
+It publishes one new generation and refuses to touch a store with any other kind of damage.
+It does not salvage data.
+.PP
+A repair or a compaction takes an exclusive lock on the store.
+Stop every other writer first (unmount the FUSE daemon, halt EFI sessions).
+.PP
+An encrypted store is checked in full only with a key.
+Without a key, the physical structures and the key slot header are checked,
+and a repair or a compaction is refused.
+.SH OPTIONS
+.TP
+.BR \-a ", " \-p ", " \-y ", " \-\-repair
+Repair what can be repaired safely, as described above.
+The three short options have the same effect, because no repair asks a question.
+.TP
+.B \-n
+Check only and never write.
+This is the default.
+.TP
+.B \-f
+Accepted for compatibility with
+.BR fsck (8).
+The check is always complete.
+.TP
+.B \-\-defrag
+Compact the store offline.
+Every object is repacked into one run of blocks, in a single new generation
+with the same visible contents.
+Nothing is written if the store is already compact.
+The store must be free of errors.
+.TP
+.BR \-k ", " \-\-key " \fIpassphrase\fR"
+Passphrase of an encrypted store.
+It is visible in the process list;
+prefer the environment variable
+.BR RWY_KEY .
+.TP
+.BI \-\-tpm " device"
+TPM device used to read the anti-rollback counter of an enrolled store.
+The counter is never incremented.
+.TP
+.BI \-\-member " store"
+Another store of the same mirror (may be repeated).
+Its recovery area is compared with the one of
+.IR store ;
+a difference is a warning.
+.PP
+A mirror health counter in the state record is a warning, one per member.
+An orphan content blob in
+.I EFI/RUNWAY/BLOBS/
+(no slot links it) and a staging file are warnings.
+.B \-\-repair
+leaves them;
+.B rwyctl check \-\-repair \-\-unlock
+removes them.
+.B rwyctl mirror clear
+drops the counters after a repair.
+.TP
+.BR \-h ", " \-\-help
+Print a short usage message and exit with status 16.
+.PP
+Only one of
+.BR \-a ,
+.BR \-p ,
+.BR \-y ,
+.BR \-\-repair ,
+.B \-\-defrag
+and
+.B \-n
+may be given.
+.SH STORE
+.I store
+is one of:
+.IP \(bu 2
+a file or a block device, for example
+.IR /dev/sda2 ;
+.IP \(bu 2
+.BI PARTUUID= uuid\fR;
+.IP \(bu 2
+.IR image@offset [\fB+\fIlength\fR],
+a store inside an image, with the offset and the length in bytes
+(decimal or with a
+.B 0x
+prefix).
+.PP
+When given a FAT volume or a disk, the checker looks for
+.I RUNWAY.DAT
+on the ESP.
+.SH EXIT STATUS
+The exit status follows
+.BR fsck (8).
+.TP
+.B 0
+No errors.
+A repair that had nothing to do, and a compaction, also exit with 0.
+.TP
+.B 1
+Errors were corrected.
+.TP
+.B 4
+Errors were left uncorrected:
+the store is damaged, or a repair or compaction was refused.
+A refused fix leaves the store untouched.
+.TP
+.B 8
+Operational error:
+the store cannot be opened or locked, the key is wrong, or an I/O error stopped a fix.
+After an I/O error the store still has a valid generation, and the fix can be run again.
+.TP
+.B 16
+Usage error.
+.PP
+The value 2 (reboot needed) is never returned.
+.SH ENVIRONMENT
+.TP
+.B RWY_KEY
+Passphrase of an encrypted store, if
+.B \-k
+is not given.
+.TP
+.B RWY_TPM
+TPM device, if
+.B \-\-tpm
+is not given.
+.SH EXAMPLES
+Check a store without writing:
+.PP
+.RS
+fsck.runway /dev/disk/by-partuuid/0a1b2c3d\-01
+.RE
+.PP
+Repair an encrypted store, with the key from the environment:
+.PP
+.RS
+RWY_KEY=secret fsck.runway \-a /dev/sda2
+.RE
+.SH SEE ALSO
+.BR fsck (8),
+.BR mount (8),
+.BR mount.runway (8),
+.BR rwyctl (1),
+.BR rwy\-fuse (1)

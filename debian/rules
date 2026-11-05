@@ -1,0 +1,25 @@
+#!/usr/bin/make -f
+include /usr/share/dpkg/architecture.mk
+
+%:
+	dh $@
+
+# A cross build makes the tools for the host architecture too. Meson runs them
+# (seed store, tests) with qemu user mode.
+ifneq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
+export QEMU_LD_PREFIX = /usr/$(DEB_HOST_GNU_TYPE)
+export PKG_CONFIG_LIBDIR = /usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig:/usr/share/pkgconfig
+
+override_dh_auto_configure:
+	printf "[binaries]\nexe_wrapper = 'qemu-$(DEB_HOST_GNU_CPU)-static'\npkg-config = 'pkg-config'\n" > debian/exe-wrapper.ini
+	dh_auto_configure -- -Dnative_tools=false --cross-file $(CURDIR)/debian/exe-wrapper.ini
+endif
+
+override_dh_clean:
+	rm -f debian/exe-wrapper.ini
+	dh_clean
+
+override_dh_auto_test:
+
+override_dh_installsystemd:
+	dh_installsystemd --no-start --no-stop-on-upgrade --no-restart-after-upgrade

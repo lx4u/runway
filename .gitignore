@@ -1,0 +1,17 @@
+# Regenerable build artifacts.
+build/
+# Editor / OS noise.
+*~
+*.sw?
+.DS_Store
+__pycache__/
+*.pyc
+# Debian build artifacts
+obj-*/
+debian/.debhelper/
+debian/tmp/
+debian/files
+debian/debhelper-build-stamp
+debian/*.substvars
+debian/*.debhelper
+debian/runway-*/

@@ -1,0 +1,141 @@
+From 7f6b94212e3df7227634098d9b648cbeefb3575c Mon Sep 17 00:00:00 2001
+From: Cedric Hombourger <cedric.hombourger@siemens.com>
+Date: Sat, 31 Oct 2026 16:01:56 +0100
+Subject: [RFC PATCH v3 1/4] fs: fat: add a write that keeps the end of the
+ file
+
+A write that ends before the end of a FAT file truncates the file at
+that point. The fatwrite command relies on this to replace a whole
+file.
+
+Add file_fat_pwrite() for callers that update part of a file. With
+keep_tail set, the clusters after the written range are kept and the
+file size only grows. A zero-length write does not change the file.
+
+Signed-off-by: Cedric Hombourger <cedric.hombourger@siemens.com>
+---
+ fs/fat/fat_write.c | 35 ++++++++++++++++++++++++++---------
+ include/fat.h      |  2 ++
+ 2 files changed, 28 insertions(+), 9 deletions(-)
+
+diff --git a/fs/fat/fat_write.c b/fs/fat/fat_write.c
+index a1d28b4e..a3f5baef 100644
+--- a/fs/fat/fat_write.c
++++ b/fs/fat/fat_write.c
+@@ -925,10 +925,12 @@ static int check_overflow(fsdata *mydata, __u32 clustnum, loff_t size)
+  * the file associated with 'dentptr'
+  * Update the number of bytes written in *gotsize and return 0
+  * or return -1 on fatal errors.
++ * Unless 'keep_tail' is set, a write that ends before the end of the file
++ * truncates the file there.
+  */
+ static int
+ set_contents(fsdata *mydata, dir_entry *dentptr, loff_t pos, __u8 *buffer,
+-	     loff_t maxsize, loff_t *gotsize)
++	     loff_t maxsize, loff_t *gotsize, bool keep_tail)
+ {
+ 	unsigned int bytesperclust = mydata->clust_size * mydata->sect_size;
+ 	__u32 curclust = START(dentptr);
+@@ -942,7 +944,8 @@ set_contents(fsdata *mydata, dir_entry *dentptr, loff_t pos, __u8 *buffer,
+ 	debug("%llu bytes\n", filesize);
+ 
+ 	if (!filesize) {
+-		if (!curclust)
++		/* Keep the clusters when the tail is kept */
++		if (!curclust || keep_tail)
+ 			return 0;
+ 		if (!CHECK_CLUST(curclust, mydata->fatsize) ||
+ 		    IS_LAST_CLUST(curclust, mydata->fatsize)) {
+@@ -1045,7 +1048,7 @@ set_contents(fsdata *mydata, dir_entry *dentptr, loff_t pos, __u8 *buffer,
+ 	if (filesize <= cur_pos) {
+ 		/* no more write */
+ 		newclust = get_fatent(mydata, endclust);
+-		if (!IS_LAST_CLUST(newclust, mydata->fatsize)) {
++		if (!keep_tail && !IS_LAST_CLUST(newclust, mydata->fatsize)) {
+ 			/* truncate the rest */
+ 			clear_fatent(mydata, newclust);
+ 
+@@ -1469,8 +1472,8 @@ static int normalize_longname(char *l_filename, const char *filename)
+ 	return 0;
+ }
+ 
+-int file_fat_write_at(const char *filename, loff_t pos, void *buffer,
+-		      loff_t size, loff_t *actwrite)
++static int fat_write_at(const char *filename, loff_t pos, void *buffer,
++			loff_t size, loff_t *actwrite, bool keep_tail)
+ {
+ 	dir_entry *retdent;
+ 	fsdata datablock = { .fatbuf = NULL, };
+@@ -1535,7 +1538,8 @@ int file_fat_write_at(const char *filename, loff_t pos, void *buffer,
+ 		}
+ 
+ 		/* Update file size in a directory entry */
+-		retdent->size = cpu_to_le32(pos + size);
++		if (!keep_tail || pos + size > FAT2CPU32(retdent->size))
++			retdent->size = cpu_to_le32(pos + size);
+ 		/* Update change date */
+ 		dentry_set_time(retdent);
+ 	} else {
+@@ -1552,7 +1556,8 @@ int file_fat_write_at(const char *filename, loff_t pos, void *buffer,
+ 		retdent = itr->dent;
+ 	}
+ 
+-	ret = set_contents(mydata, retdent, pos, buffer, size, actwrite);
++	ret = set_contents(mydata, retdent, pos, buffer, size, actwrite,
++			   keep_tail);
+ 	if (ret < 0) {
+ 		printf("Error: writing contents\n");
+ 		ret = -EIO;
+@@ -1578,6 +1583,18 @@ exit:
+ 	return ret;
+ }
+ 
++int file_fat_write_at(const char *filename, loff_t pos, void *buffer,
++		      loff_t size, loff_t *actwrite)
++{
++	return fat_write_at(filename, pos, buffer, size, actwrite, false);
++}
++
++int file_fat_pwrite(const char *filename, void *buffer, loff_t offset,
++		    loff_t maxsize, loff_t *actwrite)
++{
++	return fat_write_at(filename, offset, buffer, maxsize, actwrite, true);
++}
++
+ int file_fat_write(const char *filename, void *buffer, loff_t offset,
+ 		   loff_t maxsize, loff_t *actwrite)
+ {
+@@ -1877,7 +1894,7 @@ int fat_mkdir(const char *dirname)
+ 		set_start_cluster(mydata, &dotdent[1], itr->start_clust);
+ 
+ 	ret = set_contents(mydata, retdent, 0, (__u8 *)dotdent,
+-			   bytesperclust, &actwrite);
++			   bytesperclust, &actwrite, false);
+ 	if (ret < 0) {
+ 		printf("Error: writing contents\n");
+ 		goto exit;
+@@ -1885,7 +1902,7 @@ int fat_mkdir(const char *dirname)
+ 	/* Write twice for "." */
+ 	set_start_cluster(mydata, &dotdent[0], START(retdent));
+ 	ret = set_contents(mydata, retdent, 0, (__u8 *)dotdent,
+-			   bytesperclust, &actwrite);
++			   bytesperclust, &actwrite, false);
+ 	if (ret < 0) {
+ 		printf("Error: writing contents\n");
+ 		goto exit;
+diff --git a/include/fat.h b/include/fat.h
+index 40da0370..91b55dc0 100644
+--- a/include/fat.h
++++ b/include/fat.h
+@@ -225,6 +225,8 @@ int fat_register_device(struct blk_desc *dev_desc, int part_no);
+ 
+ int file_fat_write(const char *filename, void *buf, loff_t offset, loff_t len,
+ 		   loff_t *actwrite);
++int file_fat_pwrite(const char *filename, void *buf, loff_t offset,
++		    loff_t len, loff_t *actwrite);
+ int fat_read_file(const char *filename, void *buf, loff_t offset, loff_t len,
+ 		  loff_t *actread);
+ int fat_opendir(const char *filename, struct fs_dir_stream **dirsp);
+-- 
+2.47.3
+

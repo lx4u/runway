@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+option('gnuefi_inc', type : 'string', value : '/usr/include/efi',
+  description : 'gnu-efi headers')
+option('gnuefi_lib', type : 'string', value : '/usr/lib',
+  description : 'gnu-efi libraries, crt0 and linker script')
+option('soak_cycles', type : 'integer', value : 10000, min : 1,
+  description : 'update cycles of the rotation soak (suite soak)')
+option('fuse', type : 'feature', value : 'auto',
+  description : 'Linux FUSE adapter (needs libfuse3-dev)')
+option('ovmf_code', type : 'string', value : '/usr/share/OVMF/OVMF_CODE_4M.fd',
+  description : 'OVMF firmware code for the QEMU suites')
+option('ovmf_vars', type : 'string', value : '/usr/share/OVMF/OVMF_VARS_4M.fd',
+  description : 'OVMF variable store template for the QEMU suites')
+option('debian_guest', type : 'feature', value : 'auto',
+  description : 'Debian guest QEMU integration test (needs mmdebstrap and qemu)')
+option('systemd_unit_dir', type : 'string', value : '',
+  description : 'systemd system unit directory')
+
+option('native_tools', type : 'boolean', value : true,
+  description : 'build the host tools for the build machine; off in a cross build makes them for the target (run by exe_wrapper)')

@@ -1,0 +1,114 @@
+From c3e384f60b23a1179109e2a3cc845bdfc3043f93 Mon Sep 17 00:00:00 2001
+From: Cedric Hombourger <cedric.hombourger@siemens.com>
+Date: Sat, 31 Oct 2026 16:06:22 +0100
+Subject: [RFC PATCH v3 4/4] efi_loader: do not trim files in Write()
+
+UEFI describes Write() as writing the given bytes at the current
+position and growing the file if required. A successful Write() must
+not drop data after the written range (UEFI 2.10, section 13.5.6).
+The UEFI SCT checks this in its Write() basic test.
+
+Write() called fs_write(), which cut the file at the end of the
+written range. A write in the middle of a file lost all data after
+it. Use fs_pwrite() instead. Only FAT and exFAT keep the tail. Other
+filesystems return -ENOSYS, and Write() falls back to cutting the
+file as before.
+
+Add an efi_selftest that overwrites the start of a FAT file.
+
+Signed-off-by: Cedric Hombourger <cedric.hombourger@siemens.com>
+---
+ lib/efi_loader/efi_file.c                    | 10 +++-
+ lib/efi_selftest/efi_selftest_block_device.c | 48 ++++++++++++++++++++
+ 2 files changed, 56 insertions(+), 2 deletions(-)
+
+diff --git a/lib/efi_loader/efi_file.c b/lib/efi_loader/efi_file.c
+index 7dee57d5..b49437dd 100644
+--- a/lib/efi_loader/efi_file.c
++++ b/lib/efi_loader/efi_file.c
+@@ -665,6 +665,7 @@ static efi_status_t efi_file_write_int(struct efi_file_handle *this,
+ 	struct file_handle *fh = to_fh(this);
+ 	efi_status_t ret = EFI_SUCCESS;
+ 	loff_t actwrite;
++	int err;
+ 
+ 	if (!this || !buffer_size || !buffer) {
+ 		ret = EFI_INVALID_PARAMETER;
+@@ -686,8 +687,13 @@ static efi_status_t efi_file_write_int(struct efi_file_handle *this,
+ 		ret = EFI_DEVICE_ERROR;
+ 		goto out;
+ 	}
+-	if (fs_write(fh->path, map_to_sysmem(buffer), fh->offset, *buffer_size,
+-		     &actwrite)) {
++	err = fs_pwrite(fh->path, map_to_sysmem(buffer), fh->offset,
++			*buffer_size, &actwrite);
++	/* Only FAT and exFAT keep the tail, other filesystems cut it */
++	if (err == -ENOSYS)
++		err = fs_write(fh->path, map_to_sysmem(buffer), fh->offset,
++			       *buffer_size, &actwrite);
++	if (err) {
+ 		ret = EFI_DEVICE_ERROR;
+ 		goto out;
+ 	}
+diff --git a/lib/efi_selftest/efi_selftest_block_device.c b/lib/efi_selftest/efi_selftest_block_device.c
+index 847d9369..dd0191a9 100644
+--- a/lib/efi_selftest/efi_selftest_block_device.c
++++ b/lib/efi_selftest/efi_selftest_block_device.c
+@@ -605,6 +605,54 @@ static int execute(void)
+ 		efi_st_error("Failed to close file\n");
+ 		return EFI_ST_FAILURE;
+ 	}
++
++	/* Overwrite the start of the file, the size and the rest stay */
++	ret = root->open(root, &file, u"u-boot.txt",
++			 EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
++	if (ret != EFI_SUCCESS) {
++		efi_st_error("Failed to open file\n");
++		return EFI_ST_FAILURE;
++	}
++	buf_size = 2;
++	boottime->copy_mem(buf, "Hi", buf_size);
++	ret = file->write(file, &buf_size, buf);
++	if (ret != EFI_SUCCESS || buf_size != 2) {
++		efi_st_error("Failed to write file\n");
++		return EFI_ST_FAILURE;
++	}
++	ret = file->close(file);
++	if (ret != EFI_SUCCESS) {
++		efi_st_error("Failed to close file\n");
++		return EFI_ST_FAILURE;
++	}
++
++	/* Verify the overwritten file */
++	boottime->set_mem(buf, sizeof(buf), 0);
++	ret = root->open(root, &file, u"u-boot.txt", EFI_FILE_MODE_READ, 0);
++	if (ret != EFI_SUCCESS) {
++		efi_st_error("Failed to open file\n");
++		return EFI_ST_FAILURE;
++	}
++	buf_size = sizeof(buf) - 1;
++	ret = file->read(file, &buf_size, buf);
++	if (ret != EFI_SUCCESS) {
++		efi_st_error("Failed to read file\n");
++		return EFI_ST_FAILURE;
++	}
++	if (buf_size != 7) {
++		efi_st_error("Wrong number of bytes read: %u\n",
++			     (unsigned int)buf_size);
++		return EFI_ST_FAILURE;
++	}
++	if (memcmp(buf, "HiBoot", 6)) {
++		efi_st_error("Unexpected file content %s\n", buf);
++		return EFI_ST_FAILURE;
++	}
++	ret = file->close(file);
++	if (ret != EFI_SUCCESS) {
++		efi_st_error("Failed to close file\n");
++		return EFI_ST_FAILURE;
++	}
+ #else
+ 	efi_st_todo("CONFIG_FAT_WRITE is not set\n");
+ #endif /* CONFIG_FAT_WRITE */
+-- 
+2.47.3
+

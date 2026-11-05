@@ -1,0 +1,45 @@
+#!/bin/sh
+# Demo /init, laid over the Alpine initramfs. The slot's version comes from demo.version= on the
+# kernel command line: v1 and v2 confirm and install the next version, v3 never confirms and has a watchdog.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+/bin/busybox --install -s
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+# Everything this script prints goes to the serial port and to the screen
+mkdir -p /tmp
+mkfifo /tmp/out
+tee /dev/tty0 < /tmp/out > /dev/ttyS0 2>/dev/null &
+exec > /tmp/out 2>&1
+say() { echo "DEMO: $*"; }
+
+# Load the storage and FAT drivers (modules in /etc/modules), then give USB disks time to appear
+for m in $(cat /etc/modules); do modprobe $m 2>/dev/null; done
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
+sleep 3
+
+ver=$(sed -n 's/.*demo\.version=\([0-9]*\).*/\1/p' /proc/cmdline)
+args() { echo "console=tty0 console=ttyS0,115200 demo.version=$1"; }
+# install N [WATCHDOG]: add version N as a new slot, recycling the oldest one when both slots are used
+install() {
+    rwyctl update --kernel blob:vmlinuz --initrd blob:initrd --args "$(args $1)" ${2:+--watchdog $2} \
+        || say "install of v$1 failed"
+}
+
+booted=$(rwyctl get BOOTED) || { say "no Runway store found (missing storage driver?), see docs/demo.md"; exec sh; }
+say "v$ver booted $booted"
+case $ver in
+1) rwyctl confirm; say "v1 confirmed, installing v2"; install 2 ;;
+2) rwyctl confirm
+   if rwyctl status | grep -q FAILED; then
+       say "v3 failed, v2 is running, demo complete"
+       exec sh -c 'while :; do sleep 3600; done'
+   fi
+   say "v2 confirmed, installing v3"; install 3 20 ;;
+3) say "v3 will not confirm, the watchdog resets the machine in 20 s (or reset it yourself)"
+   exec sh -c 'while :; do sleep 3600; done' ;;
+*) say "unknown demo.version"; exec sh ;;
+esac
+sleep 2
+reboot -f

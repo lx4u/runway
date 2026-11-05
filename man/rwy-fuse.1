@@ -1,0 +1,203 @@
+.TH RWY-FUSE 1 "" "Runway" "User Commands"
+.SH NAME
+rwy\-fuse \- mount a Runway store as a directory tree
+.SH SYNOPSIS
+.B rwy\-fuse
+[\fIfuse options\fR]
+[\fB\-\-key\fR \fIpassphrase\fR] [\fB\-\-key\-file\fR \fIfile\fR] [\fB\-\-dek\-file\fR \fIfile\fR]
+[\fB\-\-tpm\fR \fIdev\fR] [\fB\-\-freeze\-wait\fR \fIseconds\fR]
+.I store
+[\fIstore\fR...]
+.I mountpoint
+.SH DESCRIPTION
+.B rwy\-fuse
+mounts a Runway store with FUSE.
+It is a thin layer over the same core library that
+.B RUNWAY.EFI
+and the host tools use.
+.PP
+Each change made through the mount is one transaction.
+It is durable when the system call returns: the new generation is published and flushed.
+After a crash you see the old files or the new files, never a mix.
+Renaming over an existing name is atomic.
+.PP
+The boot slots of
+.I EFI/RUNWAY/
+are also shown as a Boot Loader Specification view
+.RI ( loader/entries ).
+When the store has a
+.B QUOTA
+(see
+.BR rwyctl (1)),
+a new entry first removes the slots the quota asks for, in a commit of their own, as
+.B rwyctl update
+does.
+The booted slot and the newest OK slot are never removed.
+If the entry cannot fit, it is not stored and no slot is removed.
+On an enrolled store, rwy-fuse checks the anti-rollback counter at mount and attaches it, so commits raise the epoch.
+If the check fails, the mount works but no slot is removed (a warning is printed), and an entry that needs a removal is refused.
+A refused entry is written to stderr and to syslog, because the commit follows the close of the file.
+.PP
+Writing
+.B OK
+to the
+.B STATE
+of the slot that booted, the health signal of the system, also deletes the
+.B RunwayBootGuard
+EFI variable, as
+.B rwyctl confirm
+does.
+A failure is written to stderr and the write still succeeds.
+.PP
+Mount with
+.B \-o default_permissions
+so that the kernel checks the owner and the mode that the store keeps.
+The core is single-threaded: run
+.B rwy\-fuse
+with
+.BR \-s .
+.PP
+The store is locked.
+When
+.BR rwyctl (1)
+runs against the mounted store, it connects to the daemon's RPC socket (see
+.BR "RPC SOCKET" )
+and the daemon executes the command in-process against its mounted store.
+Without the socket it fails with exit status 5.
+.PP
+The mount source is
+.BI rwy\-fuse: uuid
+(the UUID of the store) and the file system type is
+.BR fuse.rwy\-fuse .
+.BR rwyctl (1)
+reads the mount point of a store from
+.IR /proc/self/mountinfo .
+.SH ARGUMENTS
+.TP
+.I store
+A file, a partition (such as
+.I /dev/sda2
+or
+.BI PARTUUID= uuid\fR),
+or
+.IR image@offset [\fB+\fIlength\fR],
+a store inside an image.
+Give several stores to mount the members of one mirror.
+Every member is locked.
+The newest member is the primary; a member that is behind is left out.
+A write that cannot reach at least one member fails, and
+.B rwy\-fuse
+warns when it runs degraded.
+.TP
+.I mountpoint
+An existing directory.
+.SH OPTIONS
+Options that
+.B rwy\-fuse
+does not know are given to FUSE.
+Useful ones are
+.BR \-s ,
+.BR \-f ,
+.B \-o allow_other
+and
+.BR "\-o default_permissions" .
+.TP
+.BR \-k ", " \-\-key " \fIpassphrase\fR"
+Passphrase of an encrypted store.
+It is visible in the process list; prefer
+.BR \-\-key\-file .
+.TP
+.BI \-\-key\-file " file"
+.TQ
+.BI \-\-passphrase\-file " file"
+Read the passphrase from a file.
+.TP
+.BI \-\-dek\-file " file"
+Read the data key (32 raw bytes) from a file.
+.TP
+.BI \-\-tpm " dev"
+TPM device or Unix socket used to unseal the key (default
+.IR /dev/tpmrm0 ).
+.TP
+.BI \-\-freeze\-wait " seconds"
+How long the requests wait during a freeze (default 120).
+After that they fail with
+.B EAGAIN
+until the thaw.
+0 fails them at once.
+.PP
+The key sources are, in order: the options, the variables
+.B RWY_KEY
+and
+.BR RWY_DEK_FILE ,
+systemd credentials
+.RB ( $CREDENTIALS_DIRECTORY ),
+and the TPM.
+This lets
+.I boot.mount
+mount an encrypted store with nobody present.
+.SH ENVIRONMENT
+.TP
+.B RWY_KEY
+Passphrase of an encrypted store.
+.TP
+.B RWY_DEK_FILE
+File with the data key.
+.TP
+.B RWY_TPM
+TPM device, if
+.B \-\-tpm
+is not given.
+.TP
+.B RWY_RUN_DIR
+Directory of the freeze socket (default
+.BR /run/rwy\-fuse ).
+.TP
+.B RWY_CRYPTO
+Set to
+.B builtin
+to use the built-in cipher code instead of OpenSSL.
+At start, before the mount is served, the daemon removes the files that a killed
+.BR rwyctl (1)
+left in
+.I /.staging/
+(no
+.B rwyctl
+can be copying yet).
+.SH RPC SOCKET
+After the mount, the daemon listens on a Unix socket named
+.IB uuid .sock
+(the UUID of the store) in the directory
+.BR /run/rwy\-fuse ,
+or in
+.B RWY_RUN_DIR
+if it is set.
+The socket has mode 0600 and only the user of the daemon (root, for the boot mount) may connect.
+It is removed when the daemon ends and replaced if a killed daemon left it behind.
+If the socket cannot be made, the daemon warns and goes on without it.
+.PP
+When
+.BR rwyctl (1)
+connects to the socket, it sends its command arguments together with open file descriptors for standard output,
+standard error, and any input files over
+.BR SCM_RIGHTS .
+The daemon flushes any buffered writes, runs the command in-process on its mounted store, invalidates its
+directory and BLS caches after mutations, and replies with the exit code.
+.SH EXAMPLES
+.PP
+.RS
+rwy\-fuse \-s \-o default_permissions /efi/RUNWAY.DAT /boot
+.RE
+.PP
+A mirror:
+.PP
+.RS
+rwy\-fuse \-s a.store b.store /mnt
+.RE
+.PP
+Unmount with
+.BR fusermount3 " " \-u .
+.SH SEE ALSO
+.BR mount.runway (8),
+.BR rwyctl (1),
+.BR fsck.runway (8)

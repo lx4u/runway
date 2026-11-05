@@ -1,0 +1,13 @@
+[Unit]
+Description=Runway boot store (BLS view)
+After=efi.mount dev-tpmrm0.device
+
+[Mount]
+What=auto
+Where=/boot
+Type=runway
+Options=rw,nosuid,nodev,allow_other,default_permissions
+
+
+[Install]
+WantedBy=local-fs.target

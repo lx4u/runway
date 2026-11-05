@@ -1,0 +1,81 @@
+#!/bin/sh
+# mount.runway — mount helper for Runway boot stores (single or mirrored)
+set -e
+
+spec=""
+mountpoint=""
+opts=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o)
+            if [ -n "${2:-}" ]; then
+                opts="$opts -o $2"
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        -o*)
+            opts="$opts $1"
+            shift
+            ;;
+        -r)
+            opts="$opts -o ro"
+            shift
+            ;;
+        -w)
+            opts="$opts -o rw"
+            shift
+            ;;
+        -t)
+            shift 2 || shift
+            ;;
+        -s|-f|-n|-v)
+            shift
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            if [ -z "$spec" ]; then
+                spec="$1"
+            elif [ -z "$mountpoint" ]; then
+                mountpoint="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$spec" ] || [ -z "$mountpoint" ]; then
+    echo "Usage: mount.runway <auto|store1[,store2...]> <mountpoint> [-o options]" >&2
+    exit 2
+fi
+
+RUNWAY_FUSE="${RUNWAY_FUSE:-rwy-fuse}"
+if ! command -v "$RUNWAY_FUSE" >/dev/null 2>&1; then
+    for p in /usr/bin/rwy-fuse /usr/local/bin/rwy-fuse /bin/rwy-fuse; do
+        if [ -x "$p" ]; then
+            RUNWAY_FUSE="$p"
+            break
+        fi
+    done
+fi
+
+if [ "$spec" = auto ]; then
+    RWYCTL="${RWYCTL:-rwyctl}"
+    if ! command -v "$RWYCTL" >/dev/null 2>&1 && [ -x /usr/bin/rwyctl ]; then
+        RWYCTL=/usr/bin/rwyctl
+    fi
+    command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 || true
+    spec=$("$RWYCTL" members) || {
+        echo "mount.runway: no store to mount" >&2
+        exit 1
+    }
+fi
+
+stores=$(printf '%s\n' "$spec" | tr ',' ' ')
+
+# shellcheck disable=SC2086
+exec "$RUNWAY_FUSE" $opts $stores "$mountpoint"

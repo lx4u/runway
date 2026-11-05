@@ -1,0 +1,117 @@
+.TH MOUNT.RUNWAY 8 "" "Runway" "System Administration"
+.SH NAME
+mount.runway \- mount helper for Runway boot stores
+.SH SYNOPSIS
+.B mount \-t runway
+[\fB\-o\fR \fIoptions\fR]
+.IR store [\fB,\fIstore\fR...]
+.I mountpoint
+.br
+.B mount \-t runway auto
+.I mountpoint
+.PP
+.B mount.runway
+.IR store [\fB,\fIstore\fR...]
+.I mountpoint
+[\fB\-o\fR \fIoptions\fR]
+.SH DESCRIPTION
+.B mount.runway
+is called by
+.BR mount (8)
+for the file system type
+.BR runway .
+It starts
+.BR rwy\-fuse (1)
+with the stores and the mount point.
+.PP
+The stores are separated by commas.
+Several stores are the members of one mirror: a write reaches every member, and each member is locked.
+A store is a file, a partition (such as
+.I /dev/sda2
+or
+.BI PARTUUID= uuid\fR),
+or
+.IR image@offset [\fB+\fIlength\fR].
+.PP
+The store
+.B auto
+asks
+.BR rwyctl (1)
+for the members of the boot store
+.RB ( "rwyctl members" ):
+a partition of the store type, else a
+.B RUNWAY.DAT
+on a mounted ESP.
+The helper waits for udev first, for at most 10 seconds.
+It fails (exit 1) when there is no store or when it cannot choose one.
+.SH OPTIONS
+.TP
+.BI \-o " options"
+Passed to
+.BR rwy\-fuse (1),
+and so to FUSE.
+Example:
+.BR allow_other ,
+.BR default_permissions .
+.TP
+.B \-r
+Same as
+.BR "\-o ro" .
+.TP
+.B \-w
+Same as
+.BR "\-o rw" .
+.PP
+The options
+.BR \-s ,
+.BR \-f ,
+.B \-n
+and
+.BR \-v ,
+and
+.B \-t
+with its value, are accepted and ignored.
+.SH ENVIRONMENT
+.TP
+.B RUNWAY_FUSE
+The program to run instead of
+.BR rwy\-fuse .
+If
+.B rwy\-fuse
+is not in the path, the helper looks for it in
+.IR /usr/bin ,
+.I /usr/local/bin
+and
+.IR /bin .
+.PP
+The keys of an encrypted store come from the environment and the TPM, as for
+.BR rwy\-fuse (1).
+.TP
+.B RWYCTL
+The program to run instead of
+.BR rwyctl ,
+for
+.BR auto .
+.SH FILES
+.TP
+.I /etc/fstab
+.PP
+.RS
+.nf
+/efi/RUNWAY.DAT  /boot  runway  defaults  0  0
+auto             /boot  runway  defaults  0  0
+.fi
+.RE
+.SH EXIT STATUS
+2 for a usage error, 1 when
+.B auto
+finds no store.
+Otherwise the helper is replaced by
+.BR rwy\-fuse ,
+and its exit status is the one that
+.BR mount (8)
+sees.
+.SH SEE ALSO
+.BR rwy\-fuse (1),
+.BR fsck.runway (8),
+.BR rwyctl (1)

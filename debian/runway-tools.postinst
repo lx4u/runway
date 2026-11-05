@@ -1,0 +1,35 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    LOADER="/usr/lib/runway/rwy-loader.efi"
+    if [ ! -f "$LOADER" ]; then
+        for f in /usr/lib/*/runway/rwy-loader.efi; do
+            if [ -f "$f" ]; then
+                LOADER="$f"
+                break
+            fi
+        done
+    fi
+
+    if [ -f "$LOADER" ] && command -v rwyctl >/dev/null 2>&1; then
+        WDT_ARG=""
+        WDT_DIR="/usr/lib/runway/wdt"
+        if [ ! -d "$WDT_DIR" ]; then
+            for d in /usr/lib/*/runway/wdt; do
+                if [ -d "$d" ]; then
+                    WDT_DIR="$d"
+                    break
+                fi
+            done
+        fi
+        if [ -d "$WDT_DIR" ]; then
+            WDT_ARG="--wdt $WDT_DIR"
+        fi
+        rwyctl loader set "$LOADER" $WDT_ARG 2>/dev/null || true
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0

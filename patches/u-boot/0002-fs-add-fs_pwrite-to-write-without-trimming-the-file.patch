@@ -1,0 +1,194 @@
+From d356c350974d4b6ae56fc623819873353ab7109c Mon Sep 17 00:00:00 2001
+From: Cedric Hombourger <cedric.hombourger@siemens.com>
+Date: Sat, 31 Oct 2026 16:04:58 +0100
+Subject: [RFC PATCH v3 2/4] fs: add fs_pwrite() to write without trimming the
+ file
+
+fs_write() cuts the file at the end of the written range. Callers that
+update part of a file need the data after that range to stay.
+
+Add fs_pwrite() and an optional pwrite() operation in struct
+fstype_info. Only FAT sets it. Other filesystems return -ENOSYS, so
+callers can choose their own fallback. Document the tail behaviour of
+fs_write().
+
+Add a dm test that writes into the middle of a FAT file.
+
+Signed-off-by: Cedric Hombourger <cedric.hombourger@siemens.com>
+---
+ fs/fs.c        | 28 +++++++++++++++++++++++++---
+ include/fs.h   | 22 +++++++++++++++++++++-
+ test/dm/host.c | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 90 insertions(+), 4 deletions(-)
+
+diff --git a/fs/fs.c b/fs/fs.c
+index b18ccec8..59f1f3df 100644
+--- a/fs/fs.c
++++ b/fs/fs.c
+@@ -169,6 +169,9 @@ struct fstype_info {
+ 		    loff_t len, loff_t *actread);
+ 	int (*write)(const char *filename, void *buf, loff_t offset,
+ 		     loff_t len, loff_t *actwrite);
++	/* Optional: like write, but keeps data after the written range */
++	int (*pwrite)(const char *filename, void *buf, loff_t offset,
++		      loff_t len, loff_t *actwrite);
+ 	void (*close)(void);
+ 	int (*uuid)(char *uuid_str);
+ 	/*
+@@ -205,6 +208,7 @@ static struct fstype_info fstypes[] = {
+ 		.read = fat_read_file,
+ #if CONFIG_IS_ENABLED(FAT_WRITE)
+ 		.write = file_fat_write,
++		.pwrite = file_fat_pwrite,
+ 		.unlink = fat_unlink,
+ 		.mkdir = fat_mkdir,
+ #else
+@@ -709,15 +713,21 @@ int fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
+ 	return _fs_read(filename, addr, offset, len, 0, actread);
+ }
+ 
+-int fs_write(const char *filename, ulong addr, loff_t offset, loff_t len,
+-	     loff_t *actwrite)
++static int _fs_write(const char *filename, ulong addr, loff_t offset,
++		     loff_t len, loff_t *actwrite, bool keep_tail)
+ {
+ 	struct fstype_info *info = fs_get_info(fs_type);
+ 	void *buf;
+ 	int ret;
+ 
++	if (keep_tail && !info->pwrite)
++		return -ENOSYS;
++
+ 	buf = map_sysmem(addr, len);
+-	ret = info->write(filename, buf, offset, len, actwrite);
++	if (keep_tail)
++		ret = info->pwrite(filename, buf, offset, len, actwrite);
++	else
++		ret = info->write(filename, buf, offset, len, actwrite);
+ 	unmap_sysmem(buf);
+ 
+ 	if (ret < 0 && len != *actwrite) {
+@@ -729,6 +739,18 @@ int fs_write(const char *filename, ulong addr, loff_t offset, loff_t len,
+ 	return ret;
+ }
+ 
++int fs_write(const char *filename, ulong addr, loff_t offset, loff_t len,
++	     loff_t *actwrite)
++{
++	return _fs_write(filename, addr, offset, len, actwrite, false);
++}
++
++int fs_pwrite(const char *filename, ulong addr, loff_t offset, loff_t len,
++	      loff_t *actwrite)
++{
++	return _fs_write(filename, addr, offset, len, actwrite, true);
++}
++
+ struct fs_dir_stream *fs_opendir(const char *filename)
+ {
+ 	struct fstype_info *info = fs_get_info(fs_type);
+diff --git a/include/fs.h b/include/fs.h
+index 8afc81c0..bd2c6333 100644
+--- a/include/fs.h
++++ b/include/fs.h
+@@ -155,7 +155,9 @@ int fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
+ /**
+  * fs_write() - write file to the partition previously set by fs_set_blk_dev()
+  *
+- * Note that not all filesystem drivers support offset != 0.
++ * Note that not all filesystem drivers support offset != 0. The file is
++ * cut at offset + len, data after the written range is lost. Use
++ * fs_pwrite() to keep it.
+  *
+  * @filename:	full path of the file to write to
+  * @addr:	address of the buffer to read from
+@@ -167,6 +169,24 @@ int fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
+ int fs_write(const char *filename, ulong addr, loff_t offset, loff_t len,
+ 	     loff_t *actwrite);
+ 
++/**
++ * fs_pwrite() - write into a file without cutting off its tail
++ *
++ * Like fs_write(), but data after the written range is kept and the file
++ * size only grows. Filesystems without support, such as ext4, return
++ * -ENOSYS.
++ *
++ * @filename:	full path of the file to write to
++ * @addr:	address of the buffer to read from
++ * @offset:	offset in the file from where to start writing
++ * @len:	the number of bytes to write
++ * @actwrite:	returns the actual number of bytes written
++ * Return:	0 if OK with valid @actwrite, -ENOSYS if the filesystem
++ *		cannot keep the tail, -1 on other error conditions
++ */
++int fs_pwrite(const char *filename, ulong addr, loff_t offset, loff_t len,
++	      loff_t *actwrite);
++
+ /*
+  * Directory entry types, matches the subset of DT_x in posix readdir()
+  * which apply to u-boot.
+diff --git a/test/dm/host.c b/test/dm/host.c
+index f577377d..69afe5f5 100644
+--- a/test/dm/host.c
++++ b/test/dm/host.c
+@@ -7,6 +7,7 @@
+ #include <blk.h>
+ #include <dm.h>
+ #include <fs.h>
++#include <mapmem.h>
+ #include <os.h>
+ #include <sandbox_host.h>
+ #include <asm/test.h>
+@@ -108,6 +109,49 @@ static int dm_test_host_dup(struct unit_test_state *uts)
+ }
+ DM_TEST(dm_test_host_dup, UTF_SCAN_FDT);
+ 
++/* fs_pwrite() keeps the data after the written range on FAT */
++static int dm_test_host_fat_pwrite(struct unit_test_state *uts)
++{
++	static const char label[] = "fatpw";
++	struct udevice *dev, *blk;
++	struct blk_desc *desc;
++	char fname[256];
++	char buf[16];
++	loff_t actwrite, actread;
++
++	ut_assertok(host_create_device(label, true, DEFAULT_BLKSZ, &dev));
++	ut_assertok(os_persistent_file(fname, sizeof(fname), "1MB.fat32.img"));
++	ut_assertok(host_attach_file(dev, fname));
++	ut_assertok(blk_get_from_parent(dev, &blk));
++	ut_assertok(device_probe(blk));
++	desc = dev_get_uclass_plat(blk);
++	ut_assertok(fs_set_blk_dev_with_part(desc, 0));
++
++	memcpy(buf, "01234567", 8);
++	ut_assertok(fs_write("/pwrite.txt", map_to_sysmem(buf), 0, 8, &actwrite));
++
++	memcpy(buf, "ab", 2);
++	ut_assertok(fs_set_blk_dev_with_part(desc, 0));
++	ut_assertok(fs_pwrite("/pwrite.txt", map_to_sysmem(buf), 2, 2, &actwrite));
++	ut_asserteq(2, actwrite);
++
++	/* A zero-length write keeps the file */
++	ut_assertok(fs_set_blk_dev_with_part(desc, 0));
++	ut_assertok(fs_pwrite("/pwrite.txt", map_to_sysmem(buf), 0, 0, &actwrite));
++
++	memset(buf, 0, sizeof(buf));
++	ut_assertok(fs_set_blk_dev_with_part(desc, 0));
++	ut_assertok(fs_read("/pwrite.txt", map_to_sysmem(buf), 0, 0, &actread));
++	ut_asserteq(8, actread);
++	ut_asserteq_str("01ab4567", buf);
++
++	ut_assertok(host_detach_file(dev));
++	ut_assertok(device_unbind(dev));
++
++	return 0;
++}
++DM_TEST(dm_test_host_fat_pwrite, UTF_SCAN_FDT);
++
+ /* Basic test of 'host' command */
+ static int dm_test_cmd_host(struct unit_test_state *uts)
+ {
+-- 
+2.47.3
+

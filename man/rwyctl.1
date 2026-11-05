@@ -1,0 +1,574 @@
+.TH RWYCTL 1 "" "Runway" "User Commands"
+.SH NAME
+rwyctl \- read and change the boot slots of a Runway store
+.SH SYNOPSIS
+.B rwyctl
+[\fB\-v\fR] [\fB\-\-io\-stats\fR]
+[\fB\-\-store\fR \fIfile\fR]... [\fB\-\-device\fR \fIdev\fR]...
+[\fB\-\-uuid\fR \fIuuid\fR] [\fB\-\-all\-devices\fR]
+[\fB\-\-passphrase\-file\fR \fIfile\fR] [\fB\-\-dek\-file\fR \fIfile\fR]
+[\fB\-\-tpm\fR \fIdev\fR]
+.I command
+[\fIargument\fR...]
+.SH DESCRIPTION
+.B rwyctl
+works on the boot slots of a Runway store, from the running system or from a build host.
+A slot is a directory
+.RI EFI/RUNWAY/CONFIG n /
+that holds a
+.B KERNEL
+and, optionally, an
+.BR INITRD ,
+a
+.BR DTB ,
+the kernel command line
+.BR ARGS
+and a
+.BR LABEL .
+The slot with the highest revision that is not
+.B FAILED
+is started by
+.BR RUNWAY.EFI .
+.PP
+Each slot has a state:
+.BR INSTALLED " (new, never confirmed),"
+.BR TESTING " (started once, not confirmed),"
+.BR OK " (confirmed)"
+and
+.BR FAILED " (final)."
+.PP
+With the boot loop guard on
+.RB ( LOOP\-GUARD ),
+.B RUNWAY.EFI
+counts how often it starts the same
+.B OK
+slot inside
+.BR LOOP\-WINDOW .
+The entry after
+.B LOOP\-LIMIT
+fails the slot (cause
+.BR boot_loop )
+and starts the next lower
+.B OK
+slot, else
+.BR RECOVERY ,
+with reason
+.BR boot_loop .
+A lone slot with nothing to fall back on is not failed.
+.B confirm
+resets the count.
+.PP
+A command that changes the store locks every member of it for its whole run, never waits for a lock,
+and makes one commit.
+It is all or nothing: on an error nothing is published.
+.SS Finding the store
+Without
+.B \-\-store
+or
+.BR \-\-device ,
+.B rwyctl
+looks at the partitions of the running system, as
+.B RUNWAY.EFI
+does. It takes a partition of the store type (Extended Boot Loader) with a valid superblock.
+A disk with no such partition is searched for a
+.BR RUNWAY.DAT .
+It never writes to a partition while it looks.
+Name the store yourself with:
+.TP
+.BI \-\-store " file"
+A store file, or
+.IR image@offset [\fB+\fIlength\fR].
+Repeat it to name every member of a mirror.
+.TP
+.BI \-\-device " dev"
+A partition such as
+.I /dev/sda2
+or
+.BI PARTUUID= uuid\fR.
+May be repeated.
+.TP
+.BI \-\-uuid " uuid"
+Use the store with this UUID when there are several.
+.TP
+.B \-\-all\-devices
+Use every store that is found.
+.PP
+Several stores and none chosen is an error (exit 3).
+A mirror is the same store (same UUID) on up to 8 disks.
+A write reaches every member that is current.
+A member that is missing or behind is not written, and
+.B rwyctl
+warns.
+.SS Mounted store
+When
+.BR rwy\-fuse (1)
+holds the store,
+.B rwyctl
+connects to the daemon's RPC socket, passes its arguments and open file descriptors over
+.BR SCM_RIGHTS ,
+and
+.B rwy\-fuse
+executes the command in-process against its mounted store without closing the store or dropping its locks.
+When no daemon answers on a locked store (for example another offline
+.B rwyctl
+holds the lock), the command fails with exit 5 at once.
+.PP
+.BR init ,
+.B check \-\-repair
+and
+.B reencrypt
+are refused (exit 5): unmount the store first.
+.SS Keys
+An encrypted store needs a key.
+.B rwyctl
+tries, in this order: the option
+.B \-\-dek\-file
+(32 raw bytes) or
+.BR \-\-passphrase\-file ,
+the variables
+.B RWY_DEK_FILE
+and
+.BR RWY_KEY ,
+a TPM 2.0 unseal when the store has a TPM key slot, and then a prompt on the terminal.
+Without a terminal it exits with 4 and does not wait.
+.SH OPTIONS
+.TP
+.B \-v
+Say why a partition was skipped while looking for a store, and when a command runs via
+.B rwy\-fuse
+RPC on a mounted store.
+.TP
+.B \-\-io\-stats
+Run the command, then print on the standard error the calls made to the store and the system calls made to the files.
+.TP
+.BI \-\-passphrase\-file " file"
+Read the passphrase from a file.
+.TP
+.BI \-\-dek\-file " file"
+Read the data key from a file.
+.TP
+.BI \-\-tpm " dev"
+TPM device or Unix socket (default
+.IR /dev/tpmrm0 ).
+.TP
+.BR \-h ", " \-\-help
+Print the usage and exit.
+.SH COMMANDS
+.SS Look at the store
+.TP
+.B stores
+List the stores that are found: UUID, number of members, generation, whether it is encrypted, and the
+member files.
+.TP
+.B members
+Print the path of each member of the store (the boot store, else the only one, or the one of
+.BR \-\-uuid ),
+one per line, to be used by a mount helper. It fails (exit 3) when there is no store or several and none
+is chosen, and when a
+.B RUNWAY.DAT
+is on a file system that is not mounted.
+.TP
+.B status
+One line per slot (revision, state, tries, watchdog, cause of a failure, label, BLS entry name,
+metadata), then the global values
+.RB ( BOOTED ", " REASON ", " WATCHDOG ", " SLOTS ", " BOOT\-DELAY ", " QUOTA ", " LOOP\-GUARD ", " LOOP\-LIMIT ", " LOOP\-WINDOW ", " USED ", " LAST\-EVICT ,
+.BR RECOVER_NEXT ", " COUNTER ", " RECOVERY ", " RECORD ", " ANCHOR ", " INCOMPLETE ).
+After them, one
+.B MIRROR\-MEMBER
+line for each mirror member that has a health counter: its UUID, its state now
+.RB ( online ", " lagging " or " absent ),
+the counters
+.RB ( LAGGING ", " SYNC_FAILED ", " WRITE_FAILED ", " MISSING )
+and the last event with the record sequence it happened at.
+.B RECORD\-RESETS
+tells how many times the state record was found damaged.
+A healthy store prints none of these lines.
+.TP
+.BR get " [\fINAME\fR] \fIFIELD\fR"
+Print one value and nothing else.
+Exits with 1 when the value is not set.
+.TP
+.BR slots " [\fB\-\-label\fR \fILABEL\fR]"
+Print the slot names, one per line, in slot order. With
+.BR \-\-label ,
+print only the slots whose
+.B LABEL
+is exactly
+.IR LABEL ;
+nothing is printed, and the exit status is 0, when none matches.
+It only reads the store, so it works on a mounted store too.
+.TP
+.B check
+Check
+.I EFI/RUNWAY/
+and exit with 8 on a violation.
+.B check \-\-repair \-\-unlock
+repairs the revision counter and the state record offline; it needs
+.B \-\-store
+or
+.BR \-\-device .
+Orphan blobs (content blobs that no slot links) and staging files are warnings;
+.B \-\-repair
+removes them.
+.B check \-\-blobs
+also hashes every content blob and reports one whose content is not its name
+(it reads all the blobs).
+With
+.B \-\-repair
+a slot that links such a blob is marked
+.B FAILED
+with
+.B CAUSE
+.BR bad_blob ;
+the blob is never renamed or rewritten.
+.TP
+.B flight show \fR[\fB\-\-raw\fR]
+Show the flight recorder of the boot events.
+It is plaintext and needs no key.
+.TP
+.B log show \fR[\fB\-\-raw\fR]
+Show the update journal (install, update, confirm, fail, remove).
+.TP
+.B log verify
+Check the hash chain of the update journal.
+.PP
+With
+.B \-\-raw
+the output is
+.IR key = value
+lines.
+.SS Change the slots
+.TP
+.B init
+Create an empty
+.IR EFI/RUNWAY/ .
+.B install
+refuses without it.
+.TP
+.B install \-\-kernel \fISRC\fR [\fIoptions\fR]
+Write a whole new slot, state
+.BR INSTALLED ,
+in one commit.
+Print the slot name and its revision.
+A payload file keeps its modification time (64-bit seconds).
+A payload that is a copy keeps its change time too;
+a link to a content blob (--dedup) has the change time of the link.
+The options are
+.BI \-\-initrd " SRC" ,
+.BI \-\-dtb " SRC" ,
+.B \-\-dedup
+(share identical payloads via content blobs in
+.IR EFI/RUNWAY/BLOBS/ ),
+.BI \-\-args " TEXT" | @FILE,
+.BI \-\-label " TEXT" | @FILE,
+.BI \-\-entry " NAME" | @FILE,
+.BI \-\-meta " TEXT" | @FILE,
+.BI \-\-tries " N"
+(boots an unconfirmed slot gets, default 1),
+.BI \-\-watchdog " S"
+and
+.BI \-\-name " CONFIGn" .
+Without
+.B \-\-name
+the slot is
+.BI CONFIG n
+with n one above the highest.
+.I SRC
+is a file, or
+.BI blob: HASH
+for a content blob (64 lower case hex digits) that is already in
+.IR EFI/RUNWAY/BLOBS/ .
+Without
+.B \-\-dedup ,
+the slot receives its own copy of each payload with independent physical blocks, isolating candidate slots and fallback slots from shared block damage.
+When
+.B \-\-dedup
+is given, a file is stored once as
+.IR EFI/RUNWAY/BLOBS/HASH ,
+the SHA-256 of its content, and the slot links it.
+.IR RECOVERY/
+always keeps its own copy of the data.
+When
+.B QUOTA
+is set and the new slot would pass it, the older slots that the plan names
+(incomplete, then
+.BR FAILED ,
+then the oldest
+.BR OK )
+are removed first, in a commit of their own, and the new slot follows in the next commit.
+Each removal is an
+.B EVICT
+record in the update journal.
+The booted slot, the newest
+.B OK
+slot (and the next one, without
+.BR RECOVERY/ )
+and a slot under test are never removed.
+When they and the new slot do not fit, nothing is removed and the exit code is 7.
+On an enrolled store the anchor is checked first (exit 6 when it cannot be trusted).
+When the removals leave enough free blocks but no run long enough, the store is defragmented before the install.
+The sources are checked before anything is removed.
+.TP
+.B update \-\-kernel \fISRC\fR [\fIoptions\fR]
+Like
+.BR install ,
+without naming a slot, and it keeps the number of slots at
+.BR SLOTS .
+Below
+.B SLOTS
+it adds a slot.
+At
+.B SLOTS
+it replaces one in the same commit: a
+.B FAILED
+slot first, then the oldest
+.B OK
+slot.
+It never replaces the booted slot, the newest
+.B OK
+slot or a slot under test (exit 6 when none may go).
+When
+.B QUOTA
+is set,
+.B update
+needs no
+.B SLOTS
+and works as described for
+.B install
+above.
+.TP
+.BR confirm " [\fINAME\fR]"
+Mark a slot
+.BR OK .
+The default is the booted slot.
+It is refused (exit 6) for a
+.B FAILED
+slot, and when
+.B RUNWAY.EFI
+could not record its choice and started another slot.
+Confirming the booted slot also deletes the
+.B RunwayBootGuard
+EFI variable, which counts the boots for the boot loop guard.
+Confirming a slot that is already
+.B OK
+only does that, with no write to the store.
+If the variable cannot be deleted (for example a read\-only
+.IR efivarfs ),
+the slot stays confirmed, a warning is printed and the exit status is 1.
+.TP
+.BR fail " [\fINAME\fR]"
+Mark a slot
+.BR FAILED .
+This is final.
+.TP
+.B set \fR[\fINAME\fR] \fIFIELD VALUE\fR
+Set a global value:
+.B WATCHDOG
+(seconds),
+.B SLOTS
+(1 to 64),
+.B BOOT\-DELAY
+(0 to 30 seconds),
+.B QUOTA
+(10 to 95 percent of the usable store),
+.B LOOP\-GUARD
+(\fBon\fR or \fBoff\fR),
+.B LOOP\-LIMIT
+(2 to 255 entries) or
+.B LOOP\-WINDOW
+(30 to 86400 seconds).
+.TP
+.B remove \fINAME\fR
+Delete a slot.
+.TP
+.B recover\-next \fR[\fB\-\-cancel\fR]
+Boot
+.B RECOVERY
+once at the next boot, or cancel the request.
+.TP
+.B put \fIPATH SRC\fR, \fBcat\fR \fIPATH\fR
+Write a file into the store, or print one.
+.SS Recovery and watchdog
+.TP
+.B recovery area set \-\-kernel \fISRC\fR [\fB\-\-initrd\fR \fISRC\fR] [\fB\-\-dtb\fR \fISRC\fR] [\fB\-\-args\fR \fITEXT\fR|@\fIFILE\fR]
+Write the plaintext recovery area of an encrypted store.
+It needs no key.
+It writes every member, and the copy that is not in use, so a power cut keeps the old bundle.
+Needs
+.B \-\-store
+or
+.BR \-\-device .
+.TP
+.B recovery area show
+Show the copies.
+Exits with 8 when a member has no valid bundle or the members differ.
+.TP
+.B recovery set \-\-unlock \-\-kernel \fISRC\fR [\fIoptions\fR]
+Install the
+.B RECOVERY
+slot. It keeps its own copy of the data, also for a
+.BI blob: HASH .
+.TP
+.B wdt set \-\-unlock \fISRC\fR...
+Put the EFI watchdog drivers in
+.IR EFI/RUNWAY/WDT/ .
+Each file is stored as a content blob and linked under its base name.
+.B RUNWAY.EFI
+tries them one by one until one arms.
+.SS Loader area
+.TP
+.B loader set \fIFILE\fR [\fB\-\-wdt\fR \fIDIR\fR] [\fB\-\-timeout\fR \fIN\fR] [\fB\-\-tries\fR \fIN\fR]
+Stage a new loader binary on trial in the plaintext loader area.
+Writes the inactive copy across every mirror member, computes and verifies SHA\-256 hashes, writes the bundle header last, and updates the state record to mark the copy as a pending trial.
+Optionally includes watchdog driver applications from
+.I DIR
+and sets trial timeout (default 300 seconds) or tries count (default 3).
+.TP
+.B loader show \fR[\fB\-\-json\fR]
+Display both bundle copies, their validity status, sequence counters, entry hashes, and the state record.
+Exits with 8 when a member has no valid bundle, an invalid state record, or when mirror members hold differing copies.
+.TP
+.B loader commit
+Promote the pending trial copy to confirmed good immediately without requiring a reboot.
+.TP
+.B mirror clear
+Drop the health counters of every member and write the record, after a repair.
+It needs
+.B \-\-store
+or
+.BR \-\-device .
+.SS Encrypted stores
+.TP
+.B anchor status
+.TQ
+.B anchor enroll \fR[\fB\-\-pcr7\fR \fIHEX\fR]
+.TQ
+.B anchor reset \fR[\fB\-\-pcr7\fR \fIHEX\fR]
+The anti-rollback counter in the TPM.
+.B enroll
+defines the counter for the store (policy on PCR 7), raises it once and records its value.
+.B reset
+does the same after it removed a counter that is there, for a restored copy, a changed PCR 7 or a new TPM.
+Both need the store key and the TPM.
+.B \-\-pcr7
+binds the policy to the given PCR 7 value (64 hex digits), for a device that is prepared offline.
+On an enrolled store,
+.BR install ,
+.BR update ,
+.B remove
+and
+.B fail
+are refused (exit 6) while
+.B ANCHOR
+is not
+.BR ok .
+.TP
+.B reencrypt \fR[\fIoptions\fR]
+Change the data key and the key slot.
+The options are
+.BR \-\-old\-key ,
+.BR \-\-new\-key ,
+.BR \-\-old\-passphrase ,
+.BR \-\-new\-passphrase ,
+.BR \-\-old\-passphrase\-file ,
+.BR \-\-new\-passphrase\-file ,
+.BR \-\-old\-dek\-file ,
+.B \-\-new\-dek\-file
+and
+.BI \-\-new\-dek\-out " file"
+(write the new data key to a private file).
+The store needs free space for a second copy of the live data, and the command refuses before it writes
+(exit 7) if there is not enough.
+After a power cut the store can be mounted with one of the two keys, and the command can be run again.
+.SH EXIT STATUS
+.TP
+.B 0
+Done.
+.TP
+.B 1
+I/O error, or a value that is not set.
+.TP
+.B 2
+Usage error.
+.TP
+.B 3
+No store found, or several and none chosen.
+.TP
+.B 4
+The store is locked: no usable key.
+.TP
+.B 5
+The store is busy: another command or
+.BR rwy\-fuse (1)
+holds it.
+.TP
+.B 6
+Refused by the layout rules.
+.TP
+.B 7
+No space.
+.TP
+.B 8
+.B check
+or
+.B log verify
+found violations.
+.PP
+Messages go to the standard error and start with
+.BR rwyctl: .
+.SH ENVIRONMENT
+.TP
+.B SOURCE_DATE_EPOCH
+Seconds since 1970 to use as the time of every change, for a reproducible image.
+The modification time of a copied file is capped by it, and its change time is set to it.
+Without it, files get the wall-clock time.
+.BR mkstore (1)
+honours it too.
+.TP
+.B TMPDIR
+Directory for the scratch copy of an input that is on a mounted store (default
+.IR /var/tmp ).
+.TP
+.B RWY_KEY
+Passphrase of an encrypted store.
+.TP
+.B RWY_DEK_FILE
+File with the 32 raw bytes of the data key.
+.TP
+.B RWY_TPM
+TPM device or Unix socket, if
+.B \-\-tpm
+is not given.
+.TP
+.B RWYCTL_ROOT
+Prefix for
+.IR /proc ,
+.I /sys
+and
+.IR /dev ,
+for tests with fake trees.
+.TP
+.B RWY_RUN_DIR
+The directory of the socket of
+.BR rwy\-fuse
+(default
+.IR /run/rwy\-fuse ).
+.SH EXAMPLES
+Install an image, then confirm it once the system has started well:
+.PP
+.RS
+.nf
+rwyctl install \-\-kernel vmlinuz \-\-initrd initrd.img \-\-args @cmdline
+rwyctl confirm
+.fi
+.RE
+.PP
+Work on a store file with a passphrase:
+.PP
+.RS
+rwyctl \-\-store store.img \-\-passphrase\-file pw status
+.RE
+.SH SEE ALSO
+.BR fsck.runway (8),
+.BR rwy\-fuse (1),
+.BR mount.runway (8)

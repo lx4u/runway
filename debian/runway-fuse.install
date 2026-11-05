@@ -1,0 +1,5 @@
+usr/bin/rwy-fuse
+usr/share/man/man1/rwy-fuse.1
+usr/lib/systemd/system/boot.mount
+usr/sbin/mount.runway
+usr/share/man/man8/mount.runway.8

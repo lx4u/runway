@@ -28,7 +28,9 @@ rwyctl = executable('rwyctl', rwyctl_sources, tpm_src, recarea_src, loader_src,
 mkstore = executable('mkstore', 'mkstore.c', recarea_src,
   include_directories : host_inc,
   link_with : [hostdev_lib, core_lib, crypto_lib, crypto_openssl_lib],
-  dependencies : [libm, openssl], native : native_tools)
+  dependencies : [libm, openssl], native : native_tools,
+  install : install_tools,
+  install_dir : get_option('sbindir'))
 
 iobench_linux = executable('iobench_linux', 'iobench_linux.c',
   include_directories : host_inc, link_with : [crypto_lib], native : native_tools)

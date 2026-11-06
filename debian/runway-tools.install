@@ -1,6 +1,7 @@
 usr/bin/rwyctl
 usr/share/man/man1/rwyctl.1
 usr/sbin/fsck.runway
+usr/sbin/mkstore
 usr/share/man/man8/fsck.runway.8
 usr/lib/*/runway/RUNWAY.EFI
 usr/lib/*/runway/rwy-loader.efi

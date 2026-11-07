@@ -168,7 +168,7 @@ is chosen, and when a
 .B RUNWAY.DAT
 is on a file system that is not mounted.
 .TP
-.B status
+.B status \fR[\fB\-\-json\fR]
 One line per slot (revision, state, tries, watchdog, cause of a failure, label, BLS entry name,
 metadata), then the global values
 .RB ( BOOTED ", " REASON ", " WATCHDOG ", " SLOTS ", " BOOT\-DELAY ", " QUOTA ", " LOOP\-GUARD ", " LOOP\-LIMIT ", " LOOP\-WINDOW ", " USED ", " LAST\-EVICT ,
@@ -183,12 +183,32 @@ and the last event with the record sequence it happened at.
 .B RECORD\-RESETS
 tells how many times the state record was found damaged.
 A healthy store prints none of these lines.
+With
+.BR \-\-json ,
+print the status as a JSON object.
+Its keys are the lower case names of the lines above, with
+.B \-
+written as
+.BR _ ,
+except that
+.B slots
+is the array of slots and
+.B SLOTS
+is
+.BR slots_limit .
+A value that is not set is
+.BR null .
+The
+.B mirror
+array and
+.B record_resets
+are always present.
 .TP
 .BR get " [\fINAME\fR] \fIFIELD\fR"
 Print one value and nothing else.
 Exits with 1 when the value is not set.
 .TP
-.BR slots " [\fB\-\-label\fR \fILABEL\fR]"
+.BR slots " [\fB\-\-json\fR] [\fB\-\-label\fR \fILABEL\fR]"
 Print the slot names, one per line, in slot order. With
 .BR \-\-label ,
 print only the slots whose
@@ -196,6 +216,9 @@ print only the slots whose
 is exactly
 .IR LABEL ;
 nothing is printed, and the exit status is 0, when none matches.
+With
+.BR \-\-json ,
+print the matching slot names as a JSON array.
 It only reads the store, so it works on a mounted store too.
 .TP
 .B check

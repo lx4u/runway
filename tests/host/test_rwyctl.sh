@@ -11,6 +11,7 @@ trap 'rm -rf "$T"' EXIT
 fail() { echo "RWYCTL FAIL: $*" >&2; exit 1; }
 want() { [ "$1" = "$2" ] || fail "$3: got '$1', want '$2'"; }   # got want what
 code() { "$@" >"$T/out" 2>"$T/err" </dev/null; echo $?; }
+json_ok() { command -v python3 >/dev/null 2>&1 || return 0; python3 -I -m json.tool <"$1" >/dev/null || { cat "$1" >&2; fail "$2"; }; }
 has() { grep -qF -- "$2" "$1" || { cat "$1" >&2; fail "missing '$2' in $1"; }; }
 
 UUID1=11111111-2222-3333-4444-555555555555
@@ -30,6 +31,8 @@ seed() { $HFS "$1" mkdir EFI/RUNWAY || fail seed; slot "$1" 1 OK; slot "$1" 2 IN
 mk --uuid $UUID1 "$T/a.store"
 want "$(code $CTL --store "$T/a.store" status)" 0 "status without EFI/RUNWAY"
 has "$T/err" "EFI/RUNWAY is absent"
+want "$(code $CTL --store "$T/a.store" status --json)" 0 "status --json without EFI/RUNWAY"
+want "$(cat "$T/out")" "{}" "status --json without EFI/RUNWAY prints an empty object"
 # install refuses without EFI/RUNWAY and points at init; init only creates the empty subtree
 cp "$T/a.store" "$T/n0.store"; echo kimg >"$T/k0"
 want "$(code $CTL --store "$T/n0.store" install --kernel "$T/k0")" 1 "install without EFI/RUNWAY"
@@ -71,6 +74,10 @@ slot "$T/a.store" 4 INSTALLED           # a is newer than b
 want "$(code $CTL --store "$T/b.store" --store "$T/a.store" status)" 0 "mirror status"
 has "$T/err" "lagging"
 has "$T/out" "CONFIG4"
+want "$(code $CTL --store "$T/b.store" --store "$T/a.store" status --json)" 0 "mirror status --json"
+json_ok "$T/out" "mirror status --json is valid JSON"
+has "$T/out" '"mirror": ['
+has "$T/out" '"record_resets": 0'
 want "$(code $CTL --store "$T/a.store" --store "$T/b.store" get CONFIG4 STATE)" 0 "mirror order independent"
 want "$(code $CTL --store "$T/a.store" --store "$T/gone.store" status)" 0 "missing member tolerated"
 has "$T/err" "missing"
@@ -628,6 +635,26 @@ want "$(code $I slots --label nothing-like-it)" 0 "slots --label without a match
 want "$($I slots | head -3 | tr '\n' ' ')" "CONFIG1 CONFIG2 CONFIG3 " "slots lists names in order"
 want "$($I slots | wc -l)" "$($I status | awk '$1 ~ /^CONFIG[0-9]+$/' | wc -l)" "slots lists every slot"
 want "$(code $I slots --label)" 2 "slots --label needs a value"
+want "$(code $I slots --invalid)" 2 "slots with invalid option exits 2"
+
+# status --json and slots --json
+want "$(code $I status --json)" 0 "status --json exit code"
+json_ok "$T/out" "status --json produces valid JSON"
+has "$T/out" '"slots": ['
+has "$T/out" '"CONFIG12"'
+has "$T/out" '"direct-label"'
+has "$T/out" '"counter":'
+has "$T/out" '"used": {'
+has "$T/out" '"recovery":'
+has "$T/out" '"incomplete": 0'
+has "$T/out" '"used": {"percent"'
+want "$(code $I status --invalid)" 2 "status with invalid option exits 2"
+
+want "$(code $I slots --json)" 0 "slots --json exit code"
+json_ok "$T/out" "slots --json produces valid JSON"
+want "$($I slots --json --label direct-label | tr -d '\n ')" '["CONFIG12"]' "slots --json --label finds one slot"
+want "$($I slots --label direct-label --json | tr -d '\n ')" '["CONFIG12"]' "slots --label --json ordering"
+want "$($I slots --json --label nothing-like-it)" '[]' "slots --json without a match"
 want "$(code $I install --kernel "$T/k.efi" --label 'bad"label')" 6 "install with bad quote in label"
 want "$(code $I install --kernel "$T/k.efi" --entry "tok-6.12.efi")" 0 "install with --entry Type 2"
 want "$($I get CONFIG13 ENTRY)" "tok-6.12.efi" "explicit Type 2 ENTRY"

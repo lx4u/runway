@@ -117,7 +117,8 @@ int list_slots(void);
 int in_list(const char *s, const char *const *list);
 int cmd_stores(void);
 int cmd_members(const group_t *g);
-int cmd_status(void);
+void json_str(const char *s);   /* a JSON string, null for no value or "-" */
+int cmd_status(int argc, char **argv);
 int cmd_get(int argc, char **argv);
 int cmd_slots(int argc, char **argv);
 
@@ -130,8 +131,8 @@ int anchor_refuse(void);   /* refuse a command that raises the epoch when the co
 int cmd_anchor(int argc, char **argv);
 
 /* rwyctl_mirror.c */
-void print_last_evict(void);   /* the LAST-EVICT line of `status` */
-void print_mirror_health(void);   /* the MIRROR lines of `status`, none when no counter is set */
+void print_last_evict(int json);   /* the LAST-EVICT line/field of `status` */
+void print_mirror_health(int json);   /* the MIRROR lines/fields of `status` */
 int cmd_mirror(int argc, char **argv);
 
 /* rwyctl_recarea.c: `recovery area set|show` on a group; it does not unlock or mount the tree. */

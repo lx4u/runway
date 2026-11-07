@@ -169,19 +169,115 @@ static void print_global(const char *label, const char *file) {
 }
 
 /* USED=<percent of the usable pool> (<used>/<usable> blocks) */
-static void print_used(void) {
+static void print_used(int json) {
     uint32_t used, usable;
     rwy_pool_usage(&g_store, &used, &usable);
-    printf("USED=%u%% (%u/%u blocks)\n", usable ? (unsigned)((uint64_t)used * 100 / usable) : 0, used, usable);
+    unsigned pct = usable ? (unsigned)((uint64_t)used * 100 / usable) : 0;
+    if (json) printf("  \"used\": {\"percent\": %u, \"blocks\": %u, \"usable\": %u},\n", pct, used, usable);
+    else printf("USED=%u%% (%u/%u blocks)\n", pct, used, usable);
 }
 
-int cmd_status(void) {
+/* A JSON string, or null for no value and for "-". Control characters are escaped. */
+void json_str(const char *s) {
+    if (!s || !strcmp(s, "-")) { fputs("null", stdout); return; }
+    putchar('"');
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') printf("\\%c", c);
+        else if (c < 0x20) printf("\\u%04x", c);
+        else putchar(c);
+    }
+    putchar('"');
+}
+
+static void json_kv_str(const char *pad, const char *key, const char *val) {
+    printf("%s\"%s\": ", pad, key);
+    json_str(val);
+    puts(",");
+}
+
+/* A JSON number when the value starts with a digit, else null. */
+static void json_kv_num(const char *pad, const char *key, const char *val) {
+    if (val && isdigit((unsigned char)val[0])) printf("%s\"%s\": %llu,\n", pad, key, strtoull(val, NULL, 10));
+    else printf("%s\"%s\": null,\n", pad, key);
+}
+
+static void print_global_json(const char *key, const char *file, int num) {
+    char v[128];
+    const char *val = read_scalar(file, v, sizeof(v)) ? NULL : v;
+    if (num) json_kv_num("  ", key, val);
+    else json_kv_str("  ", key, val);
+}
+
+static void print_slot_json(const char *slot, const slot_info_t *s) {
+    const char *pad = "      ";
+    printf("    {\n");
+    json_kv_str(pad, "slot", slot);
+    json_kv_num(pad, "revision", s->rev);
+    json_kv_str(pad, "state", s->st);
+    json_kv_num(pad, "tries", s->tries);
+    json_kv_num(pad, "watchdog", s->wd);
+    json_kv_str(pad, "cause", s->cause);
+    json_kv_str(pad, "label", s->label);
+    json_kv_str(pad, "entry", s->entry);
+    json_kv_str(pad, "meta", s->meta);
+    printf("%s\"pinned\": %s\n    }", pad, !strcmp(s->pin, "1") ? "true" : "false");
+}
+
+static int print_slots_json(void) {
+    slot_info_t s;
+    int i, n = list_slots(), inc = 0;
+
+    printf("  \"slots\": [");
+    for (i = 0; i < n; i++) {
+        inc += slot_load(g_names[i], &s);
+        printf("%s\n", i ? "," : "");
+        print_slot_json(g_names[i], &s);
+    }
+    printf("%s  ],\n", n ? "\n" : "");
+    return inc;
+}
+
+static const char *recovery_state(void) {
+    rwy_attr_t a;
+    if (rwy_stat(&g_store, EFI_ROOT "/RECOVERY", &a)) return "absent";
+    return rwy_stat(&g_store, EFI_ROOT "/RECOVERY/KERNEL", &a) ? "invalid" : "valid";
+}
+
+static void status_json(void) {
+    char v[128];
+    rwy_attr_t a;
+    int inc;
+
+    printf("{\n");
+    inc = print_slots_json();
+    json_kv_str("  ", "booted", booted_name(v, sizeof(v)));
+    print_global_json("reason", EFI_ROOT "/REASON", 0);
+    print_global_json("watchdog", EFI_ROOT "/WATCHDOG", 1);
+    print_global_json("slots_limit", EFI_ROOT "/SLOTS", 1);
+    print_global_json("boot_delay", EFI_ROOT "/BOOT-DELAY", 1);
+    print_global_json("quota", EFI_ROOT "/QUOTA", 1);
+    print_global_json("loop_guard", EFI_ROOT "/LOOP-GUARD", 1);
+    print_global_json("loop_limit", EFI_ROOT "/LOOP-LIMIT", 1);
+    print_global_json("loop_window", EFI_ROOT "/LOOP-WINDOW", 1);
+    print_used(1);
+    print_last_evict(1);
+    printf("  \"recover_next\": %s,\n", rwy_stat(&g_store, EFI_ROOT "/RECOVER_NEXT", &a) == RWY_OK ? "true" : "false");
+    print_global_json("counter", EFI_ROOT "/REVISION", 1);
+    printf("  \"recovery\": \"%s\",\n", recovery_state());
+    printf("  \"record\": \"%s\",\n", rwy_record_damaged(&g_store) ? "damaged" : "ok");
+    printf("  \"anchor\": \"%s\",\n", anchor_state(&g_store));
+    printf("  \"incomplete\": %d,\n", inc);
+    print_mirror_health(1);
+    printf("}\n");
+}
+
+static void status_text(void) {
     char v[128];
     rwy_attr_t a;
     const char *booted;
-    int inc;
-    if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return 0; }
-    inc = print_slots();
+    int inc = print_slots();
+
     booted = booted_name(v, sizeof(v));
     printf("BOOTED=%s\n", booted ? booted : "-");
     print_global("REASON", EFI_ROOT "/REASON");
@@ -192,16 +288,28 @@ int cmd_status(void) {
     print_global("LOOP-GUARD", EFI_ROOT "/LOOP-GUARD");
     print_global("LOOP-LIMIT", EFI_ROOT "/LOOP-LIMIT");
     print_global("LOOP-WINDOW", EFI_ROOT "/LOOP-WINDOW");
-    print_used();
-    print_last_evict();
+    print_used(0);
+    print_last_evict(0);
     printf("RECOVER_NEXT=%s\n", rwy_stat(&g_store, EFI_ROOT "/RECOVER_NEXT", &a) == RWY_OK ? "yes" : "no");
     print_global("COUNTER", EFI_ROOT "/REVISION");
-    printf("RECOVERY=%s\n", rwy_stat(&g_store, EFI_ROOT "/RECOVERY", &a) ? "absent" :
-           rwy_stat(&g_store, EFI_ROOT "/RECOVERY/KERNEL", &a) ? "invalid" : "valid");
+    printf("RECOVERY=%s\n", recovery_state());
     printf("RECORD=%s\n", rwy_record_damaged(&g_store) ? "damaged" : "ok");
     printf("ANCHOR=%s\n", anchor_state(&g_store));
     printf("INCOMPLETE=%d\n", inc);
-    print_mirror_health();
+    print_mirror_health(0);
+}
+
+int cmd_status(int argc, char **argv) {
+    int json = 0;
+    if (argc == 1 && !strcmp(argv[0], "--json")) json = 1;
+    else if (argc) { warn("%s", "usage: status [--json]"); return X_USAGE; }
+    if (!have_efi_runway()) {
+        warn("%s", "EFI/RUNWAY is absent (native selection is off)");
+        if (json) puts("{}");
+        return 0;
+    }
+    if (json) status_json();
+    else status_text();
     return 0;
 }
 
@@ -255,14 +363,39 @@ static int slot_matches(const char *slot, const char *label) {
     return !read_scalar(p, v, sizeof(v)) && !strcmp(v, label);
 }
 
+static void print_slots_filtered_json(int n, const char *label) {
+    int i, first = 1;
+    printf("[");
+    for (i = 0; i < n; i++) {
+        if (!slot_matches(g_names[i], label)) continue;
+        printf("%s\n  ", first ? "" : ",");
+        json_str(g_names[i]);
+        first = 0;
+    }
+    puts(first ? "]" : "\n]");
+}
+
 /* Print the slot names, or only the slots whose LABEL is exactly the given text. */
 int cmd_slots(int argc, char **argv) {
-    const char *label = 0;
-    int i, n;
-    if (argc == 2 && !strcmp(argv[0], "--label")) label = argv[1];
-    else if (argc) { warn("%s", "usage: slots [--label LABEL]"); return X_USAGE; }
+    const char *label = NULL;
+    int json = 0, i, n;
+
+    for (i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--json")) {
+            json = 1;
+        } else if (!strcmp(argv[i], "--label") && i + 1 < argc) {
+            label = argv[++i];
+        } else {
+            warn("%s", "usage: slots [--json] [--label LABEL]");
+            return X_USAGE;
+        }
+    }
     if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return X_IO; }
     n = list_slots();
+    if (json) {
+        print_slots_filtered_json(n, label);
+        return 0;
+    }
     for (i = 0; i < n; i++)
         if (slot_matches(g_names[i], label)) puts(g_names[i]);
     return 0;

@@ -46,7 +46,7 @@ int command_writes(int argc, char **argv, int cmd) {
 }
 
 static int run_read_cmd(const char *name, int argc, char **argv) {
-    if (!strcmp(name, "status")) return cmd_status();
+    if (!strcmp(name, "status")) return cmd_status(argc, argv);
     if (!strcmp(name, "get")) return cmd_get(argc, argv);
     if (!strcmp(name, "slots")) return cmd_slots(argc, argv);
     if (!strcmp(name, "cat")) return cmd_cat(argc, argv);

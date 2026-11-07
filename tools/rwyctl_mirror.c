@@ -24,7 +24,45 @@ static void print_member(const uint8_t uuid[16], const rwy_ss_health_t *h) {
            (unsigned long long)h->seq);
 }
 
-void print_mirror_health(void) {
+static void print_member_json(const uint8_t uuid[16], const rwy_ss_health_t *h, int *first) {
+    char text[40];
+    rwy_format_uuid(uuid, text);
+    if (!*first) printf(",\n");
+    printf("    {\n");
+    printf("      \"uuid\": \"%s\",\n", text);
+    printf("      \"state\": \"%s\",\n", member_state(uuid));
+    printf("      \"lagging\": %u,\n", h->count[RWY_SS_EV_LAGGING]);
+    printf("      \"sync_failed\": %u,\n", h->count[RWY_SS_EV_SYNC_FAILED]);
+    printf("      \"write_failed\": %u,\n", h->count[RWY_SS_EV_WRITE_FAILED]);
+    printf("      \"missing\": %u,\n", h->count[RWY_SS_EV_MISSING]);
+    printf("      \"last_event\": \"%s\",\n", rwy_ss_event_name(h->last_event));
+    printf("      \"last_seq\": %llu\n", (unsigned long long)h->seq);
+    printf("    }");
+    *first = 0;
+}
+
+static void print_mirror_health_json(void) {
+    uint8_t r[RWY_REC_PAYLOAD], uuid[16];
+    rwy_ss_health_t h;
+    uint32_t resets = 0;
+    int first = 1;
+
+    printf("  \"mirror\": [\n");
+    if (!rwy_record_read(&g_store, r)) {
+        resets = rwy_ss_record_reset(r);
+        for (unsigned i = 0; i < RWY_MIRROR_MAX_DEVS; i++)
+            if (rwy_ss_health_at(r, i, uuid, &h)) print_member_json(uuid, &h, &first);
+        for (unsigned i = 0; i < RWY_MIRROR_MAX_DEVS; i++) {
+            if (!rwy_ss_roster_at(r, i, uuid) || rwy_ss_health_get(r, uuid, &h)) continue;
+            memset(&h, 0, sizeof(h));
+            print_member_json(uuid, &h, &first);
+        }
+    }
+    if (!first) printf("\n");
+    printf("  ],\n  \"record_resets\": %u\n", resets);
+}
+
+static void print_mirror_health_text(void) {
     uint8_t r[RWY_REC_PAYLOAD], uuid[16];
     rwy_ss_health_t h;
     uint32_t resets;
@@ -38,6 +76,11 @@ void print_mirror_health(void) {
         print_member(uuid, &h);
     }
     if (resets) printf("RECORD-RESETS=%u\n", resets);
+}
+
+void print_mirror_health(int json) {
+    if (json) print_mirror_health_json();
+    else print_mirror_health_text();
 }
 
 /* mirror clear drops the counters after a repair; mirror forget UUID drops a member that is gone for good. Both need

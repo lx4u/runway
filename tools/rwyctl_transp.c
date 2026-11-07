@@ -305,8 +305,8 @@ static int log_show(int raw) {
     return X_OK_;
 }
 
-/* The LAST-EVICT line of `status`: the newest committed eviction, or "-". */
-void print_last_evict(void) {
+/* The LAST-EVICT line/field of `status`: the newest committed eviction, or "-"/null. */
+void print_last_evict(int json) {
     rwy_transplog_info_t info;
     uint32_t count = 0;
     int32_t i;
@@ -320,10 +320,17 @@ void print_last_evict(void) {
                                           &info, g_store.sb.generation, g_store.rec_seq, (uint32_t)i, &e) != RWY_OK ||
             e.event != RWY_JOURNAL_EVENT_EVICT)
             continue;
-        printf("LAST-EVICT=%s %s\n", e.slot, evict_reason_name(e.reserved[RWY_EVICT_REASON_OFF]));
+        if (json) {
+            printf("  \"last_evict\": {\"slot\": ");
+            json_str(e.slot);
+            printf(", \"reason\": \"%s\"},\n", evict_reason_name(e.reserved[RWY_EVICT_REASON_OFF]));
+        } else {
+            printf("LAST-EVICT=%s %s\n", e.slot, evict_reason_name(e.reserved[RWY_EVICT_REASON_OFF]));
+        }
         return;
     }
-    printf("LAST-EVICT=-\n");
+    if (json) printf("  \"last_evict\": null,\n");
+    else printf("LAST-EVICT=-\n");
 }
 
 static int log_verify(void) {

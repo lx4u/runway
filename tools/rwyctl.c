@@ -10,7 +10,7 @@
  *                [--passphrase-file F] [--dek-file F] [--tpm DEV] COMMAND ...
  * Keys, in order: --dek-file / --passphrase-file / RWY_KEY, TPM unseal (--tpm or RWY_TPM, a device or a unix
  * socket; default /dev/tpmrm0) when the store has a TPM keyslot, then a prompt on the terminal.
- *   stores | members | status | get [NAME] FIELD
+ *   stores | members | status [--json] | get [NAME] FIELD
  *     members prints the paths of the store chosen (boot store, else the only one), one per line.
  *   confirm [NAME] | fail [NAME] | set [NAME] FIELD VALUE      (NAME defaults to BOOTED for confirm/fail)
  *     confirm of the BOOTED slot is refused (exit 6) when the volatile variable RunwayBoot says RUNWAY.EFI started
@@ -70,7 +70,7 @@ static void usage(FILE *f, const char *prog) {
     if (!prog) prog = "rwyctl";
     fprintf(f, "usage: %s [-v] [--io-stats] [--store FILE]... [--device DEV]... [--uuid U] [--all-devices] "
                "[--passphrase-file F] [--dek-file F] [--tpm DEV] COMMAND\n"
-               "  stores | members | status | get [NAME] FIELD | slots [--label L] | confirm [NAME] | fail [NAME] | set [NAME] FIELD VALUE\n"
+               "  stores | members | status [--json] | get [NAME] FIELD | slots [--json] [--label L] | confirm [NAME] | fail [NAME] | set [NAME] FIELD VALUE\n"
                "  | remove NAME | recover-next [--cancel] | put PATH SRC | cat PATH\n"
                "  | install --kernel SRC [--name N] [--initrd SRC] [--dtb SRC] [--dedup]\n"
                "    [--args TEXT|@FILE] [--label TEXT|@FILE] [--tries N] [--watchdog S]\n"

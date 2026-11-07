@@ -241,3 +241,38 @@ int rwy_bls_name_match_rename(const char *old_name, size_t old_len,
 
     return RWY_ERR_PERM;
 }
+
+/* Compare two NUL-terminated strings. */
+static int str_eq(const char *a, const char *b) {
+    size_t la = rwy_strlen(a);
+    if (la != rwy_strlen(b)) return 0;
+    return rwy_strncmp(a, b, la) == 0;
+}
+
+int rwy_bls_name_match_entry(const char *rendered, const char *file) {
+    char r_canon[RWY_ENTRY_MAX + 1], f_canon[RWY_ENTRY_MAX + 1];
+    int r_has = 0, f_has = 0;
+    uint32_t r_left = 0, f_left = 0;
+    int32_t r_done = -1, f_done = -1;
+    int r_d, f_d;
+
+    if (!rendered || !file) return 0;
+    if (str_eq(rendered, file)) return 1;
+
+    if (rwy_bls_name_parse(rendered, rwy_strlen(rendered), r_canon, sizeof(r_canon),
+                           &r_has, &r_left, &r_done) != RWY_OK)
+        return 0;
+    if (rwy_bls_name_parse(file, rwy_strlen(file), f_canon, sizeof(f_canon),
+                           &f_has, &f_left, &f_done) != RWY_OK)
+        return 0;
+
+    if (!str_eq(r_canon, f_canon)) return 0;
+    if (r_has != f_has) return 0;
+    if (!r_has) return 1;
+    if (r_left != f_left) return 0;
+
+    /* No done counter (-1) means zero tries done. */
+    r_d = r_done > 0 ? r_done : 0;
+    f_d = f_done > 0 ? f_done : 0;
+    return r_d == f_d;
+}

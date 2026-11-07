@@ -188,6 +188,8 @@ os.rename(pending, final)
 ls "$M/EFI/Linux" | grep -qx "entry-sysup+2.efi" || fail "entry-sysup+2.efi not found after truncate write"
 [ "$(stat -c %s "$M/EFI/Linux/entry-sysup+2.efi")" = 1024 ] || fail "entry-sysup+2.efi has wrong size after truncate"
 [ "$(head -c 18 "$M/EFI/Linux/entry-sysup+2.efi")" = "MZfakeukisysupdate" ] || fail "entry-sysup+2.efi has wrong content after truncate"
+[ "$(stat -c %s "$M/EFI/Linux/entry-sysup+2-0.efi")" = 1024 ] || fail "entry-sysup+2-0.efi has wrong size via alias"
+[ "$(head -c 18 "$M/EFI/Linux/entry-sysup+2-0.efi")" = "MZfakeukisysupdate" ] || fail "entry-sysup+2-0.efi has wrong content via alias"
 
 # Truncate a payload blob
 printf "0123456789" > "$M/testtok/v1/trunc"

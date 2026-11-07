@@ -161,6 +161,32 @@ static void test_bls_name_rename(void) {
           "prohibit rename changing type");
 }
 
+static void test_bls_name_match_entry(void) {
+    printf("== bls name: entry matching ==\n");
+
+    /* Exact matches */
+    CHECK(rwy_bls_name_match_entry("foo.conf", "foo.conf") == 1, "exact match uncounted conf");
+    CHECK(rwy_bls_name_match_entry("foo.efi", "foo.efi") == 1, "exact match uncounted efi");
+    CHECK(rwy_bls_name_match_entry("foo+3.conf", "foo+3.conf") == 1, "exact match counted conf");
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", "foo+3.efi") == 1, "exact match counted efi");
+
+    /* Tries-done 0 equivalence */
+    CHECK(rwy_bls_name_match_entry("foo+3.conf", "foo+3-0.conf") == 1, "match +3 to +3-0 conf");
+    CHECK(rwy_bls_name_match_entry("foo+3-0.conf", "foo+3.conf") == 1, "match +3-0 to +3 conf");
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", "foo+3-0.efi") == 1, "match +3 to +3-0 efi");
+    CHECK(rwy_bls_name_match_entry("foo+3-0.efi", "foo+3.efi") == 1, "match +3-0 to +3 efi");
+    CHECK(rwy_bls_name_match_entry("foo+0.efi", "foo+0-0.efi") == 1, "match +0 to +0-0 efi");
+
+    /* Non-matches */
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", "foo+3-1.efi") == 0, "mismatch tries-done");
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", "foo+2.efi") == 0, "mismatch tries-left");
+    CHECK(rwy_bls_name_match_entry("foo.efi", "foo+3-0.efi") == 0, "mismatch state");
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", "bar+3.efi") == 0, "mismatch stem");
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", "foo+3.conf") == 0, "mismatch ext");
+    CHECK(rwy_bls_name_match_entry("foo+3.efi", NULL) == 0, "null query");
+    CHECK(rwy_bls_name_match_entry(NULL, "foo+3.efi") == 0, "null rendered");
+}
+
 static void test_bls_parse_valid(void) {
     const char *text =
         "# BLS Type 1 Entry\n"
@@ -808,6 +834,7 @@ int main(int argc, char **argv) {
     test_bls_name_render();
     test_bls_name_boot_count_path();
     test_bls_name_rename();
+    test_bls_name_match_entry();
     test_bls_parse_valid();
     test_bls_parse_multiple_initrd();
     test_bls_parse_faults();

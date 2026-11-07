@@ -42,6 +42,13 @@ int rwy_bls_name_boot_count_path(const char *canonical, size_t canonical_len,
                                   uint32_t tries_left,
                                   char *out, size_t out_sz);
 
+/* Check whether a query filename matches a rendered entry filename.
+ * Exact match returns 1. If not exact, compares canonical names and
+ * counter semantics: an entry with 0 tries done matches both
+ * <stem>+<tries>.ext and <stem>+<tries>-0.ext.
+ * Returns 1 on match, 0 if no match. */
+int rwy_bls_name_match_entry(const char *rendered, const char *file);
+
 /* Validate a rename between BLS entry names (e.g. systemd-bless-boot).
  * Returns 0 on valid bless rename and sets *target_state to RWY_BLS_STATE_OK
  * or RWY_BLS_STATE_FAILED, or negative error code (e.g. RWY_ERR_PERM)

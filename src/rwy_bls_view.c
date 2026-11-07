@@ -225,7 +225,8 @@ int rwy_bls_view_entry(const rwy_bls_view_t *v, int type2, const char *file,
     size_t i;
     for (i = 0; i < v->nslots; i++) {
         const rwy_bls_view_slot_t *sl = &v->slots[i];
-        if (!!sl->is_type2 != !!type2 || !sl->rendered || strcmp(sl->rendered, file)) continue;
+        if (!!sl->is_type2 != !!type2 || !sl->rendered) continue;
+        if (!rwy_bls_name_match_entry(sl->rendered, file)) continue;
         if (slot_out) snprintf(slot_out, slot_sz, "%s", sl->path);
         if (conf_len) *conf_len = sl->conf_len;
         return RWY_OK;

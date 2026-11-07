@@ -122,7 +122,7 @@ foreach name, src : efi_apps
   out_name = (name == 'rwy-loader') ? (name + '.efi') : (name + '.EFI')
   efi_app = custom_target(out_name,
     input : so, output : out_name, depends : undef,
-    command : [objcopy, objcopy_args, '--target=efi-app-' + arch, '@INPUT@', '@OUTPUT@'],
+    command : [objcopy, objcopy_args, '--output-target=efi-app-' + arch, '@INPUT@', '@OUTPUT@'],
     install : (is_loader or is_wdt),
     install_dir : inst_dir,
     install_mode : 'rw-r--r--',

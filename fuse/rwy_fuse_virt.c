@@ -43,6 +43,8 @@ static size_t g_virt_dirs_cnt;
 
 #define virt_use_wall_clock hostdev_use_wall_clock
 
+static int virt_truncate_blob(rwy_store_t *s, const char *bpath, off_t size);
+
 static rwy_bls_view_t g_view;
 
 /* The view of the committed store. NULL when there is none (a transaction, hidden virtual files, no memory): the caller answers -EAGAIN. */
@@ -521,13 +523,44 @@ int rwy_fuse_virt_open(rwy_store_t *s, const char *path, struct fuse_file_info *
         return 0;
     }
     stg = find_staged_by_path(path);
-    if (stg && !stg->is_type2) {
-        if ((fi->flags & O_ACCMODE) != O_RDONLY && (fi->flags & O_TRUNC)) {
-            stg->conf_len = 0;
+    if (stg) {
+        if (!stg->is_type2) {
+            if ((fi->flags & O_ACCMODE) != O_RDONLY && (fi->flags & O_TRUNC)) {
+                stg->conf_len = 0;
+            }
+            stg->open_handles++;
+            fi->fh = RWY_FH_STAGED_BASE + (uint64_t)(stg - g_staged);
+            return 0;
         }
-        stg->open_handles++;
-        fi->fh = RWY_FH_STAGED_BASE + (uint64_t)(stg - g_staged);
-        return 0;
+        if (stg->blob_path[0]) {
+            uint64_t oid;
+            int rc;
+            if ((fi->flags & O_ACCMODE) != O_RDONLY && (fi->flags & O_TRUNC)) {
+                rc = virt_truncate_blob(s, stg->blob_path, 0);
+                if (rc != 0) return rc;
+            }
+            rc = rwy_lookup(s, stg->blob_path, &oid);
+            if (rc != RWY_OK) return err_of(rc);
+            stg->open_handles++;
+            fi->fh = oid;
+            return 0;
+        }
+    }
+    if (is_payload_path(path)) {
+        char enc[256], bpath[300];
+        uint64_t oid;
+        if (rwy_bls_encode_blob_name(path, enc, sizeof(enc)) > 0) {
+            snprintf(bpath, sizeof(bpath), "EFI/RUNWAY/BLOBS/%s", enc);
+            if (rwy_lookup(s, bpath, &oid) == RWY_OK) {
+                if ((fi->flags & O_ACCMODE) != O_RDONLY && (fi->flags & O_TRUNC)) {
+                    int trc = virt_truncate_blob(s, bpath, 0);
+                    if (trc != 0) return trc;
+                }
+                payload_inc(path, oid);
+                fi->fh = oid;
+                return 0;
+            }
+        }
     }
     int err;
     v = view_or_err(s, path, &err);
@@ -815,19 +848,40 @@ int rwy_fuse_virt_rename_stage(rwy_store_t *s, const char *from, const char *to,
     return rename_payload_blob(s, from, to);
 }
 
+static int virt_truncate_conf(staged_entry_t *stg, off_t size) {
+    size_t len = (size_t)size;
+    if (size > 65536) return -EFBIG;
+    if (len > stg->conf_cap) {
+        size_t ncap = (len + 4095) & ~(size_t)4095;
+        char *nbuf = realloc(stg->conf_buf, ncap);
+        if (!nbuf) return -ENOMEM;
+        stg->conf_buf = nbuf;
+        stg->conf_cap = ncap;
+    }
+    if (len > stg->conf_len) memset(stg->conf_buf + stg->conf_len, 0, len - stg->conf_len);
+    stg->conf_len = len;
+    return 0;
+}
+
+static int virt_truncate_blob(rwy_store_t *s, const char *bpath, off_t size) {
+    int rc;
+    virt_use_wall_clock(s);
+    rc = rwy_begin(s);
+    if (rc != RWY_OK) return err_of(rc);
+    rc = rwy_truncate(s, bpath, (uint64_t)size);
+    if (rc != RWY_OK) { rwy_abort(s); return err_of(rc); }
+    return err_of(rwy_commit(s));
+}
+
 int rwy_fuse_virt_truncate(rwy_store_t *s, const char *path, off_t size) {
-    (void)s;
     staged_entry_t *stg = find_staged_by_path(path);
-    if (stg) {
-        if (!stg->is_type2) {
-            if (size == 0) {
-                stg->conf_len = 0;
-                return 0;
-            }
-            if (size <= (off_t)stg->conf_cap) {
-                stg->conf_len = (size_t)size;
-                return 0;
-            }
+    if (stg && !stg->is_type2) return virt_truncate_conf(stg, size);
+    if (stg && stg->blob_path[0]) return virt_truncate_blob(s, stg->blob_path, size);
+    if (is_payload_path(path)) {
+        char enc[256], bpath[300];
+        if (rwy_bls_encode_blob_name(path, enc, sizeof(enc)) > 0) {
+            snprintf(bpath, sizeof(bpath), "EFI/RUNWAY/BLOBS/%s", enc);
+            return virt_truncate_blob(s, bpath, size);
         }
     }
     return -ENOENT;

@@ -382,7 +382,6 @@ static int trename(const char *from, const char *to, unsigned flags) {
 
 static int ttruncate(const char *path, off_t size, struct fuse_file_info *fi) {
     int rc;
-    (void)fi;
     if (size < 0) return -EINVAL;
     if (!g_mounted) return no_store();
     rc = store_commit_active();
@@ -391,7 +390,10 @@ static int ttruncate(const char *path, off_t size, struct fuse_file_info *fi) {
     if (rc != -ENOENT) return rc;
     rc = begin_op();
     if (rc) return rc;
-    rc = rwy_truncate(&g_store, path, (uint64_t)size);
+    if (fi && fi->fh && fi->fh < RWY_FH_STAGED_BASE)
+        rc = rwy_truncate_oid(&g_store, fi->fh, (uint64_t)size);
+    else
+        rc = rwy_truncate(&g_store, path, (uint64_t)size);
     if (rc) { rwy_abort(&g_store); return err_of(rc); }
     return err_of(rwy_commit(&g_store));
 }

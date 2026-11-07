@@ -162,6 +162,29 @@ ls "$M/loader/entries" | grep -qx "entry-renamed+3.conf" || fail "entry-renamed+
 printf "MZfakeukiimagecontent" > "$M/EFI/Linux/entry-uki+2.efi"
 ls "$M/EFI/Linux" | grep -qx "entry-uki+2.efi" || fail "entry-uki+2.efi not found after staged write"
 
+# Preallocate / truncate then write and rename (systemd-sysupdate flow)
+python3 -c "
+import os
+partial = '$M/EFI/Linux/.sysupdate.partial.entry-sysup+2.efi'
+fd = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+os.ftruncate(fd, 1024)
+os.write(fd, b'MZfakeukisysupdate')
+fd2 = os.open(partial, os.O_RDONLY)
+data = os.read(fd2, 18)
+assert data == b'MZfakeukisysupdate'
+os.close(fd2)
+os.close(fd)
+os.rename(partial, '$M/EFI/Linux/entry-sysup+2.efi')
+" || fail "failed to truncate and write staged UKI"
+ls "$M/EFI/Linux" | grep -qx "entry-sysup+2.efi" || fail "entry-sysup+2.efi not found after truncate write"
+[ "$(stat -c %s "$M/EFI/Linux/entry-sysup+2.efi")" = 1024 ] || fail "entry-sysup+2.efi has wrong size after truncate"
+[ "$(head -c 18 "$M/EFI/Linux/entry-sysup+2.efi")" = "MZfakeukisysupdate" ] || fail "entry-sysup+2.efi has wrong content after truncate"
+
+# Truncate a payload blob
+printf "0123456789" > "$M/testtok/v1/trunc"
+truncate -s 4 "$M/testtok/v1/trunc" || fail "failed to truncate payload blob"
+[ "$(cat "$M/testtok/v1/trunc")" = "0123" ] || fail "invalid payload content after truncate"
+
 # 12. Bless rename good (Type 1)
 mv "$M/loader/entries/entry-cp+3.conf" "$M/loader/entries/entry-cp.conf"
 ls "$M/loader/entries" | grep -qx "entry-cp.conf" || fail "entry-cp.conf not found after good bless"

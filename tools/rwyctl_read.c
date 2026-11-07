@@ -124,22 +124,41 @@ static void slot_meta_summary(const char *slot, char *out, size_t size) {
     }
 }
 
+typedef struct {
+    char rev[128], st[128], tries[128], wd[128], cause[128], label[256], entry[256], meta[128], pin[16];
+} slot_info_t;
+
+/* Read the display values of a slot. Returns 1 when it has no REVISION (incomplete). */
+static int slot_load(const char *slot, slot_info_t *s) {
+    int inc = slot_scalar(slot, "REVISION", s->rev, sizeof(s->rev));
+    slot_scalar(slot, "STATE", s->st, sizeof(s->st));
+    slot_scalar(slot, "TRIES", s->tries, sizeof(s->tries));
+    slot_scalar(slot, "WATCHDOG", s->wd, sizeof(s->wd));
+    slot_scalar(slot, "CAUSE", s->cause, sizeof(s->cause));
+    slot_scalar(slot, "LABEL", s->label, sizeof(s->label));
+    slot_scalar(slot, "ENTRY", s->entry, sizeof(s->entry));
+    slot_meta_summary(slot, s->meta, sizeof(s->meta));
+    slot_scalar(slot, "PIN", s->pin, sizeof(s->pin));
+    return inc;
+}
+
+/* The name of the slot the BOOTED link points to, or NULL when it is not set. */
+static const char *booted_name(char *v, size_t size) {
+    char *b;
+    if (rwy_readlink(&g_store, EFI_ROOT "/BOOTED", v, size)) return NULL;
+    b = strrchr(v, '/');
+    return b ? b + 1 : v;
+}
+
 /* One line per slot; returns how many have no REVISION (incomplete). */
 static int print_slots(void) {
-    char tries[128], wd[128], rev[128], st[128], cause[128], label[256], entry[256], meta[128], pin[16];
+    slot_info_t s;
     int i, n = list_slots(), inc = 0;
     print_slot_line("SLOT", "REVISION", "STATE", "TRIES", "WATCHDOG", "CAUSE", "LABEL", "ENTRY", "META", "PIN");
     for (i = 0; i < n; i++) {
-        inc += slot_scalar(g_names[i], "REVISION", rev, sizeof(rev));
-        slot_scalar(g_names[i], "STATE", st, sizeof(st));
-        slot_scalar(g_names[i], "TRIES", tries, sizeof(tries));
-        slot_scalar(g_names[i], "WATCHDOG", wd, sizeof(wd));
-        slot_scalar(g_names[i], "CAUSE", cause, sizeof(cause));
-        slot_scalar(g_names[i], "LABEL", label, sizeof(label));
-        slot_scalar(g_names[i], "ENTRY", entry, sizeof(entry));
-        slot_meta_summary(g_names[i], meta, sizeof(meta));
-        slot_scalar(g_names[i], "PIN", pin, sizeof(pin));
-        print_slot_line(g_names[i], rev, st, tries, wd, cause, label, entry, meta, !strcmp(pin, "1") ? "yes" : "-");
+        inc += slot_load(g_names[i], &s);
+        print_slot_line(g_names[i], s.rev, s.st, s.tries, s.wd, s.cause, s.label, s.entry, s.meta,
+                        !strcmp(s.pin, "1") ? "yes" : "-");
     }
     return inc;
 }
@@ -159,13 +178,12 @@ static void print_used(void) {
 int cmd_status(void) {
     char v[128];
     rwy_attr_t a;
+    const char *booted;
     int inc;
     if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return 0; }
     inc = print_slots();
-    if (rwy_readlink(&g_store, EFI_ROOT "/BOOTED", v, sizeof(v)) == RWY_OK) {
-        char *b = strrchr(v, '/');
-        printf("BOOTED=%s\n", b ? b + 1 : v);
-    } else printf("BOOTED=-\n");
+    booted = booted_name(v, sizeof(v));
+    printf("BOOTED=%s\n", booted ? booted : "-");
     print_global("REASON", EFI_ROOT "/REASON");
     print_global("WATCHDOG", EFI_ROOT "/WATCHDOG");
     print_global("SLOTS", EFI_ROOT "/SLOTS");
@@ -198,10 +216,10 @@ static const char *const slot_get_fields[] = { "STATE", "TRIES", "REVISION", "IN
 
 /* Print BOOTED, the name of the slot the link points to. */
 static int get_booted(void) {
-    char v[4200], *b;
-    if (rwy_readlink(&g_store, EFI_ROOT "/BOOTED", v, sizeof(v))) { warn("%s", "BOOTED is not set"); return X_IO; }
-    b = strrchr(v, '/');
-    puts(b ? b + 1 : v);
+    char v[4200];
+    const char *b = booted_name(v, sizeof(v));
+    if (!b) { warn("%s", "BOOTED is not set"); return X_IO; }
+    puts(b);
     return 0;
 }
 
@@ -229,22 +247,23 @@ int cmd_get(int argc, char **argv) {
     return 0;
 }
 
+/* True when no label is wanted, or the LABEL of the slot is exactly that text. */
+static int slot_matches(const char *slot, const char *label) {
+    char p[PATH_MAX], v[4200];
+    if (!label) return 1;
+    snprintf(p, sizeof(p), EFI_ROOT "/%s/LABEL", slot);
+    return !read_scalar(p, v, sizeof(v)) && !strcmp(v, label);
+}
+
 /* Print the slot names, or only the slots whose LABEL is exactly the given text. */
 int cmd_slots(int argc, char **argv) {
     const char *label = 0;
-    char v[4200];
     int i, n;
     if (argc == 2 && !strcmp(argv[0], "--label")) label = argv[1];
     else if (argc) { warn("%s", "usage: slots [--label LABEL]"); return X_USAGE; }
     if (!have_efi_runway()) { warn("%s", "EFI/RUNWAY is absent (native selection is off)"); return X_IO; }
     n = list_slots();
-    for (i = 0; i < n; i++) {
-        char p[PATH_MAX];
-        if (label) {
-            snprintf(p, sizeof(p), EFI_ROOT "/%s/LABEL", g_names[i]);
-            if (read_scalar(p, v, sizeof(v)) || strcmp(v, label)) continue;
-        }
-        puts(g_names[i]);
-    }
+    for (i = 0; i < n; i++)
+        if (slot_matches(g_names[i], label)) puts(g_names[i]);
     return 0;
 }

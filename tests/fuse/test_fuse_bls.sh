@@ -166,6 +166,8 @@ ls "$M/EFI/Linux" | grep -qx "entry-uki+2.efi" || fail "entry-uki+2.efi not foun
 python3 -c "
 import os
 partial = '$M/EFI/Linux/.sysupdate.partial.entry-sysup+2.efi'
+pending = '$M/EFI/Linux/.#sysupdateentry-sysup+2.efi1234567890abcdef'
+final = '$M/EFI/Linux/entry-sysup+2.efi'
 fd = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
 os.ftruncate(fd, 1024)
 os.write(fd, b'MZfakeukisysupdate')
@@ -174,7 +176,14 @@ data = os.read(fd2, 18)
 assert data == b'MZfakeukisysupdate'
 os.close(fd2)
 os.close(fd)
-os.rename(partial, '$M/EFI/Linux/entry-sysup+2.efi')
+os.rename(partial, pending)
+os.chmod(pending, 0o644)
+pfd = os.open(pending, os.O_PATH)
+rfd = os.open(f'/proc/self/fd/{pfd}', os.O_RDONLY)
+assert os.read(rfd, 18) == b'MZfakeukisysupdate'
+os.close(rfd)
+os.close(pfd)
+os.rename(pending, final)
 " || fail "failed to truncate and write staged UKI"
 ls "$M/EFI/Linux" | grep -qx "entry-sysup+2.efi" || fail "entry-sysup+2.efi not found after truncate write"
 [ "$(stat -c %s "$M/EFI/Linux/entry-sysup+2.efi")" = 1024 ] || fail "entry-sysup+2.efi has wrong size after truncate"

@@ -12,111 +12,32 @@ permissions:
   contents: write
 
 jobs:
-  build-trixie:
-    name: Build Debian Trixie (amd64)
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        dist: [ trixie, forky ]
+    uses: ./.github/workflows/debian-build.yml
+    with:
+      dist: ${{ matrix.dist }}
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Configure runner environment
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          if ! grep -q "^$(whoami):" /etc/subuid; then
-            echo "$(whoami):100000:65536" | sudo tee -a /etc/subuid
-            echo "$(whoami):100000:65536" | sudo tee -a /etc/subgid
-          fi
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            sbuild \
-            mmdebstrap \
-            uidmap \
-            dpkg-dev \
-            debhelper \
-            debian-archive-keyring \
-            zstd \
-            lintian
-
-      - name: Configure sbuild
-        run: |
-          mkdir -p ~/.config/sbuild ~/.cache/sbuild
-          cat << 'EOF' > ~/.config/sbuild/config.pl
-          $chroot_mode = 'unshare';
-          $run_lintian = 1;
-          $lintian_opts = ['-I'];
-          1;
-          EOF
-
-      - name: Get cache date key
-        id: date
-        run: echo "week=$(date +'%Y-%U')" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Trixie sbuild chroot
-        id: cache-chroot
-        uses: actions/cache@v4
+      - name: Download packages
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.cache/sbuild/trixie-amd64.tar.zst
-          key: sbuild-trixie-amd64-${{ steps.date.outputs.week }}
-
-      - name: Create Trixie chroot
-        if: steps.cache-chroot.outputs.cache-hit != 'true'
-        run: |
-          mmdebstrap \
-            --arch=amd64 \
-            --variant=buildd \
-            --include=ca-certificates,build-essential \
-            --skip=output/dev \
-            trixie \
-            "$HOME/.cache/sbuild/trixie-amd64.tar.zst" \
-            http://deb.debian.org/debian
-
-      - name: Build Debian source package
-        run: |
-          dpkg-buildpackage -S -us -uc -d
-
-      - name: Build binary packages with sbuild
-        run: |
-          DSC_FILE=$(ls ../runway_*.dsc | head -n 1)
-          sbuild \
-            --chroot-mode=unshare \
-            --arch-all \
-            --dist=trixie \
-            --chroot="$HOME/.cache/sbuild/trixie-amd64.tar.zst" \
-            "$DSC_FILE"
-
-      - name: Print build log on failure
-        if: failure()
-        run: |
-          cat ../runway_*.build || true
-
-      - name: Collect build artifacts
-        run: |
-          mkdir -p dist
-          find .. -maxdepth 1 -type f \( -name "runway_*" -o -name "runway-*" \) -exec mv {} dist/ \;
-
-      - name: Determine artifact retention
-        if: github.event_name == 'push'
-        id: retention
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "days=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "days=7" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload Debian packages
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
-        with:
-          name: debian-trixie-amd64-packages
-          path: dist/*
-          retention-days: ${{ steps.retention.outputs.days }}
+          pattern: debian-*-packages
+          path: dist
+          merge-multiple: true
 
       - name: Publish Debian packages to GitHub Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release upload "${{ github.ref_name }}" dist/* --clobber || \
           gh release create "${{ github.ref_name }}" dist/* --generate-notes

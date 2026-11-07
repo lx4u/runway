@@ -648,7 +648,7 @@ static void test_bls_commit(const char *seed) {
 
     /* Refusal: Type 2 with bad magic */
     rwy_begin(&s);
-    char bad_uki[10] = "NOT_AN_EFI";
+    const char bad_uki[] = "NOT_AN_EFI";
     rwy_create(&s, "EFI/RUNWAY/BLOBS/bad.efi", RWY_S_IFREG | 0644, 0, 0);
     rwy_write_path(&s, "EFI/RUNWAY/BLOBS/bad.efi", 0, bad_uki, sizeof(bad_uki));
     rwy_commit(&s);
